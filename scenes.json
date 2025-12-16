@@ -1,0 +1,122 @@
+{
+  "buttons": [
+    {
+      "index": 0,
+      "label": "Warm White",
+      "scene": {
+        "all": {
+          "b": 120,
+          "g": 190,
+          "r": 255,
+          "w": 0
+        },
+        "type": "static"
+      }
+    },
+    {
+      "index": 1,
+      "label": "Rot",
+      "scene": {
+        "all": {
+          "b": 0,
+          "g": 0,
+          "r": 200,
+          "w": 0
+        },
+        "type": "static"
+      }
+    },
+    {
+      "index": 3,
+      "label": "Blackout",
+      "scene": {
+        "type": "blackout"
+      }
+    },
+    {
+      "index": 4,
+      "label": "Wechsel 3 Farben",
+      "scene": {
+        "crossfade_ms": 1000,
+        "hold_ms": 2000,
+        "steps": [
+          {
+            "all": {
+              "b": 0,
+              "g": 0,
+              "r": 120,
+              "w": 120
+            }
+          },
+          {
+            "all": {
+              "b": 255,
+              "g": 0,
+              "r": 0,
+              "w": 0
+            }
+          },
+          {
+            "all": {
+              "b": 0,
+              "g": 191,
+              "r": 219,
+              "w": 18
+            }
+          }
+        ],
+        "type": "sequence"
+      }
+    },
+    {
+      "index": 5,
+      "label": "gr\u00fcn / rot",
+      "scene": {
+        "type": "per-fixture",
+        "values": {
+          "LEDBars": {
+            "r": 0,
+            "g": 191,
+            "b": 0,
+            "w": 0
+          },
+          "smartbat1": {
+            "r": 255,
+            "g": 128,
+            "b": 192,
+            "w": 0
+          }
+        }
+      }
+    }
+  ],
+  "defaults": {
+    "dimmer": 255,
+    "strobe": 0
+  },
+  "fixtures": [
+    {
+      "map": [
+        "R",
+        "G",
+        "B",
+        "W"
+      ],
+      "mode": "RGBW",
+      "name": "LEDBars",
+      "start_channel": 5
+    },
+    {
+      "map": [
+        "R",
+        "G",
+        "B",
+        "W"
+      ],
+      "mode": "RGBW",
+      "name": "smartbat1",
+      "start_channel": 1
+    }
+  ],
+  "universe": 1
+}

@@ -1,0 +1,398 @@
+#!/usr/bin/env python3
+import json, array, os, time, threading
+from pathlib import Path
+from typing import Dict, List
+from flask import Flask, render_template_string, abort, request
+from ola.ClientWrapper import ClientWrapper
+
+# ---------- Konfiguration ----------
+CFG_PATH   = Path(os.environ.get("SCENES_JSON", "scenes.json"))
+AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "")   # leer = kein Schutz
+BIND_HOST  = os.environ.get("BIND_HOST", "0.0.0.0")
+BIND_PORT  = int(os.environ.get("BIND_PORT", "8080"))
+
+# ---------- Globaler Zustand ----------
+CURRENT_FRAME: List[int] | None = None
+FRAME_LOCK = threading.Lock()      # schützt CURRENT_FRAME
+SEND_LOCK  = threading.Lock()      # verhindert überlappende Sends/Fades
+ANIM_THREAD: threading.Thread | None = None
+ANIM_STOP  = threading.Event()
+
+# ---------- Hilfsfunktionen: Config / DMX ----------
+def load_cfg():
+    cfg = json.loads(CFG_PATH.read_text(encoding="utf-8"))
+    return int(cfg.get("universe", 1)), cfg.get("fixtures", []), cfg.get("buttons", [])
+
+def frame_len(fixtures: List[Dict]) -> int:
+    end = 0
+    for f in fixtures:
+        span = 4 if f["mode"].upper() == "RGBW" else 3
+        end = max(end, f["start_channel"] + span - 1)
+    return end
+
+def apply(buf: List[int], start: int, mode: str, col: Dict[str, int]):
+    r,g,b = int(col.get("r",0)), int(col.get("g",0)), int(col.get("b",0))
+    w     = int(col.get("w",0))
+    buf[start-1:start-1+3] = [r,g,b]
+    if mode.upper() == "RGBW":
+        buf[start-1+3] = w
+
+def build_dmx_frame(fixtures: List[Dict], scene: Dict) -> List[int]:
+    dmx = [0] * frame_len(fixtures)
+    t = scene.get("type", "static")
+    if t == "blackout":
+        return dmx
+    if t == "static":
+        allc = scene.get("all", {})
+        for f in fixtures:
+            apply(dmx, f["start_channel"], f["mode"], allc)
+        return dmx
+    if t == "per-fixture":
+        vals = scene.get("values", {})
+        by_name = {f["name"]: f for f in fixtures}
+        for name, col in vals.items():
+            if name in by_name:
+                f = by_name[name]
+                apply(dmx, f["start_channel"], f["mode"], col)
+        return dmx
+    # unbekannter Typ => Nullframe
+    return dmx
+
+def ensure_len(buf: List[int] | None, n: int) -> List[int]:
+    if buf is None:
+        return [0]*n
+    if len(buf) < n:
+        return buf + [0]*(n - len(buf))
+    if len(buf) > n:
+        return buf[:n]
+    return buf
+
+def get_current_frame(target_len: int) -> List[int]:
+    global CURRENT_FRAME
+    with FRAME_LOCK:
+        return ensure_len(CURRENT_FRAME, target_len)
+
+def set_current_frame(frame: List[int]) -> None:
+    global CURRENT_FRAME
+    with FRAME_LOCK:
+        CURRENT_FRAME = list(frame)
+
+def send_dmx(universe: int, dmx: List[int]) -> None:
+    data = array.array('B', dmx)
+    wrapper = ClientWrapper()
+    client = wrapper.Client()
+    client.SendDmx(universe, data, lambda status: wrapper.Stop())
+    wrapper.Run()
+    set_current_frame(dmx)
+
+def preview_rgb(scene: Dict):
+    if scene.get("type") == "blackout":
+        return (0,0,0)
+    cols = []
+    if scene.get("type") == "static":
+        c = scene.get("all", {})
+        cols.append((c.get("r",0), c.get("g",0), c.get("b",0)))
+    elif scene.get("type") == "per-fixture":
+        for c in scene.get("values", {}).values():
+            cols.append((c.get("r",0), c.get("g",0), c.get("b",0)))
+    elif scene.get("type") == "alternate":
+        # Mittelwert aus A/B als Preview
+        if "all" in scene:
+            a, b = scene["all"].get("a", {}), scene["all"].get("b", {})
+            cols = [(a.get("r",0),a.get("g",0),a.get("b",0)),
+                    (b.get("r",0),b.get("g",0),b.get("b",0))]
+        else:
+            # nimm einfach den ersten Eintrag
+            vals = scene.get("values", {})
+            if vals:
+                first = next(iter(vals.values()))
+                a, b = first.get("a", {}), first.get("b", {})
+                cols = [(a.get("r",0),a.get("g",0),a.get("b",0)),
+                        (b.get("r",0),b.get("g",0),b.get("b",0))]
+    if not cols:
+        return (0,0,0)
+    n = len(cols)
+    return (sum(r for r,_,_ in cols)//n,
+            sum(g for _,g,_ in cols)//n,
+            sum(b for *_,b in cols)//n)
+
+# ---------- Alternate-Szene ----------
+def build_alternate_frames(fixtures: List[Dict], scene: Dict) -> tuple[List[int], List[int]]:
+    if "all" in scene:
+        a = scene["all"].get("a", {})
+        b = scene["all"].get("b", {})
+        sA = {"type": "static", "all": a}
+        sB = {"type": "static", "all": b}
+        return build_dmx_frame(fixtures, sA), build_dmx_frame(fixtures, sB)
+    vals = scene.get("values", {})
+    vA = { name: c.get("a", {}) for name, c in vals.items() }
+    vB = { name: c.get("b", {}) for name, c in vals.items() }
+    sA = {"type": "per-fixture", "values": vA}
+    sB = {"type": "per-fixture", "values": vB}
+    return build_dmx_frame(fixtures, sA), build_dmx_frame(fixtures, sB)
+
+def stop_animation():
+    global ANIM_THREAD
+    if ANIM_THREAD and ANIM_THREAD.is_alive():
+        ANIM_STOP.set()
+        ANIM_THREAD.join(timeout=2)
+    ANIM_STOP.clear()
+    ANIM_THREAD = None
+
+def build_sequence_frames(fixtures: List[Dict], scene: Dict):
+    """
+    Liefert Liste von (frame, hold_ms, crossfade_ms).
+    Unterstützt:
+      - scene["steps"]: Liste von Schritten mit "all" oder "values" (optional hold/crossfade pro Schritt)
+      - scene["all_colors"]: Kurzform globale Farbliste
+    """
+    default_hold = int(scene.get("hold_ms", 0))
+    default_xf   = int(scene.get("crossfade_ms", 0))
+    frames = []
+
+    # Kurzform: all_colors
+    if "all_colors" in scene:
+        for col in scene["all_colors"]:
+            step_scene = {"type": "static", "all": col}
+            frame = build_dmx_frame(fixtures, step_scene)
+            frames.append((frame, default_hold, default_xf))
+        return frames
+
+    steps = scene.get("steps", [])
+    for st in steps:
+        hold = int(st.get("hold_ms", default_hold))
+        xfad = int(st.get("crossfade_ms", default_xf))
+        if "all" in st:
+            frame = build_dmx_frame(fixtures, {"type": "static", "all": st["all"]})
+        elif "values" in st:
+            frame = build_dmx_frame(fixtures, {"type": "per-fixture", "values": st["values"]})
+        else:
+            # Falls jemand einen leeren Schritt angibt: Nullframe dieser Länge
+            frame = [0] * frame_len(fixtures)
+        frames.append((frame, hold, xfad))
+    return frames
+
+
+def run_alternate(universe: int, fixtures: List[Dict], scene: Dict):
+    period = int(scene.get("period_ms", 1000))
+    hold   = int(scene.get("hold_ms", 0))
+    xfade  = int(scene.get("crossfade_ms", 0))
+
+    A, B = build_alternate_frames(fixtures, scene)
+    L = max(len(A), len(B))
+    A = ensure_len(A, L)
+    B = ensure_len(B, L)
+
+def run_sequence(universe: int, fixtures: List[Dict], scene: Dict):
+    seq = build_sequence_frames(fixtures, scene)
+    if not seq:
+        return
+    # auf gleiche Länge bringen
+    L = max(len(f) for f,_,_ in seq)
+    seq = [(ensure_len(f, L), hold, xf) for (f, hold, xf) in seq]
+
+    idx = 0
+    # Erste Farbe setzen
+    with SEND_LOCK:
+        send_dmx(universe, seq[0][0])
+
+    while not ANIM_STOP.is_set():
+        cur_f, cur_hold, cur_xf = seq[idx]
+        # Hold-Phase
+        if cur_hold > 0 and ANIM_STOP.wait(cur_hold/1000):
+            break
+        # Ziel ist der nächste Schritt (loop)
+        nxt = (idx + 1) % len(seq)
+        nxt_f, _, xf = seq[nxt]
+        xf = int(seq[idx][2] or xf)  # falls im aktuellen Schritt explizit gesetzt
+
+        if xf > 0:
+            steps = max(2, min(120, xf // 30))
+            delay = xf / 1000 / steps
+            # von aktuellem Frame (was gespeichert ist) zum Ziel überblenden
+            start = get_current_frame(len(nxt_f))
+            for i in range(1, steps + 1):
+                if ANIM_STOP.is_set(): break
+                t = i / steps
+                mix = [int(a + (b - a) * t) for a, b in zip(start, nxt_f)]
+                with SEND_LOCK:
+                    send_dmx(universe, mix)
+                if ANIM_STOP.wait(delay): break
+        else:
+            with SEND_LOCK:
+                send_dmx(universe, nxt_f)
+
+        idx = nxt
+    
+    while not ANIM_STOP.is_set():
+        with SEND_LOCK:
+            send_dmx(universe, A)
+        if hold > 0 and ANIM_STOP.wait(hold/1000): break
+
+        if xfade > 0:
+            steps = max(2, min(100, xfade // 30))
+            delay = xfade / 1000 / steps
+            for i in range(1, steps+1):
+                if ANIM_STOP.is_set(): break
+                t = i / steps
+                mix = [int(a + (b - a) * t) for a, b in zip(A, B)]
+                with SEND_LOCK:
+                    send_dmx(universe, mix)
+                if ANIM_STOP.wait(delay): break
+
+        with SEND_LOCK:
+            send_dmx(universe, B)
+        if hold > 0 and ANIM_STOP.wait(hold/1000): break
+
+        if xfade > 0:
+            steps = max(2, min(100, xfade // 30))
+            delay = xfade / 1000 / steps
+            for i in range(1, steps+1):
+                if ANIM_STOP.is_set(): break
+                t = i / steps
+                mix = [int(b + (a - b) * t) for a, b in zip(A, B)]
+                with SEND_LOCK:
+                    send_dmx(universe, mix)
+                if ANIM_STOP.wait(delay): break
+
+        if xfade == 0 and period > 0:
+            if ANIM_STOP.wait(period/1000): break
+
+# ---------- Flask ----------
+app = Flask(__name__)
+
+HTML = """
+<!doctype html>
+<title>DMX Web Controller</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body { font-family: system-ui, sans-serif; margin: 20px; background:#111; color:#eee;}
+.grid { display:grid; grid-template-columns: repeat(auto-fill,minmax(160px,1fr)); gap:12px;}
+.btn  { padding:14px; border-radius:12px; background:#222; color:#fff; text-align:center; text-decoration:none; display:block; border:1px solid #333; }
+.btn:hover { background:#2a2a2a; }
+.swatch { width:100%; height:80px; border-radius:10px; margin-bottom:10px; border:1px solid #444;}
+.header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
+.small { opacity:0.7; font-size:0.9em;}
+.topbar { display:flex; gap:10px; align-items:center; margin-bottom:12px;}
+input, button { background:#222; color:#eee; border:1px solid #333; border-radius:10px; padding:8px 10px; }
+</style>
+<div class="header">
+  <h1>DMX Web Controller</h1>
+  <div class="small">Universe {{universe}} · {{fixtures|length}} Fixtures · {{buttons|length}} Szenen</div>
+</div>
+
+<div class="topbar">
+  <form method="post" action="{{ url_for('blackout') }}{% if token %}?token={{token}}{% endif %}">
+    <button>Blackout</button>
+  </form>
+  <form onsubmit="return false">
+    <label class="small">Fade (ms):</label>
+    <input type="number" id="fade_ms" value="0" min="0" step="50">
+  </form>
+</div>
+
+<div class="grid">
+  {% for b in buttons %}
+    <a class="btn" href="#" onclick="trigger({{b.index}});return false;">
+      <div class="swatch" style="background: rgb({{b._rgb[0]}}, {{b._rgb[1]}}, {{b._rgb[2]}})"></div>
+      <div>{{ b.label }}</div>
+    </a>
+  {% endfor %}
+</div>
+
+<script>
+function trigger(idx){
+  const fade = document.getElementById('fade_ms').value || "0";
+  let url = "/trigger/"+idx+"?fade_ms="+encodeURIComponent(fade);
+  {% if token %} url += "&token={{token}}"; {% endif %}
+  fetch(url, {method:"POST"}).then(()=>{});
+}
+</script>
+"""
+
+def check_token():
+    if not AUTH_TOKEN:
+        return True
+    t = request.args.get("token") or request.headers.get("X-Auth-Token")
+    return t == AUTH_TOKEN
+
+@app.get("/")
+def index():
+    if not check_token(): abort(401)
+    universe, fixtures, buttons = load_cfg()
+    btns = []
+    for b in sorted(buttons, key=lambda x: x["index"]):
+        x = dict(b)
+        x["_rgb"] = preview_rgb(b.get("scene", {}))
+        btns.append(x)
+    return render_template_string(HTML, universe=universe, fixtures=fixtures, buttons=btns, token=AUTH_TOKEN)
+
+@app.post("/trigger/<int:index>")
+def trigger(index: int):
+    global ANIM_THREAD  # <-- global gleich am Anfang, nur einmal!
+
+    if not check_token(): 
+        abort(401)
+
+    fade_ms = int(request.args.get("fade_ms", "0"))
+    universe, fixtures, buttons = load_cfg()
+    b = next((x for x in buttons if x["index"] == index), None)
+    if not b:
+        abort(404, "Button nicht definiert")
+
+    scene = b.get("scene", {"type": "blackout"})
+
+    # Laufende Animationen stoppen, bevor etwas Neues startet
+    stop_animation()
+
+    # sequence -> Animations-Thread
+    if scene.get("type") == "sequence":
+        ANIM_THREAD = threading.Thread(
+            target=run_sequence, args=(universe, fixtures, scene), daemon=True
+        )
+        ANIM_THREAD.start()
+        return ("", 204)
+
+    # alternate -> Animations-Thread
+    if scene.get("type") == "alternate":
+        ANIM_THREAD = threading.Thread(
+            target=run_alternate, args=(universe, fixtures, scene), daemon=True
+        )
+        ANIM_THREAD.start()
+        return ("", 204)
+
+    # Statische / per-fixture Szene: Crossfade von current -> target
+    target = build_dmx_frame(fixtures, scene)
+
+    if fade_ms <= 0:
+        with SEND_LOCK:
+            send_dmx(universe, target)
+        return ("", 204)
+
+    start = get_current_frame(len(target))
+    steps = max(2, min(60, fade_ms // 30))   # ~30–16 ms pro Schritt
+    delay = fade_ms / 1000 / steps
+
+    with SEND_LOCK:
+        for i in range(1, steps + 1):
+            t = i / steps
+            mix = [int(a + (b - a) * t) for a, b in zip(start, target)]
+            send_dmx(universe, mix)
+            time.sleep(delay)
+
+    return ("", 204)
+
+@app.post("/blackout")
+def blackout():
+    if not check_token(): abort(401)
+    stop_animation()
+    universe, fixtures, _ = load_cfg()
+    with SEND_LOCK:
+        send_dmx(universe, [0]*frame_len(fixtures))
+    return ("", 204)
+
+if __name__ == "__main__":
+    if not CFG_PATH.exists():
+        raise SystemExit(f"{CFG_PATH} nicht gefunden.")
+    print(f"Starte auf {BIND_HOST}:{BIND_PORT} (Token gesetzt: {'ja' if AUTH_TOKEN else 'nein'})")
+    app.run(host=BIND_HOST, port=BIND_PORT)
