@@ -16,6 +16,9 @@ BIND_HOST  = os.environ.get("BIND_HOST", "0.0.0.0")
 BIND_PORT  = int(os.environ.get("BIND_PORT", "8080"))
 DIMMER_STATE_PATH = Path(os.environ.get("DIMMER_STATE_PATH", "dimmer.json"))
 
+# Logo: bitte Datei hier ablegen: ./static/logo.png
+LOGO_URL = "/static/logo.png"
+
 # =======================
 # State laden/speichern
 # =======================
@@ -202,8 +205,8 @@ def build_dmx_frame(fixtures: List[Dict], scene: Dict, root_defaults: Dict[str,i
     if t == "blackout":
         return dmx
 
-    gattrs = scene.get("attrs", {})                      # globale Szene-Attribute (dimmer/strobe)
-    pfattrs= (scene.get("per_fixture_attrs") or {})      # overrides je Fixture
+    gattrs = scene.get("attrs", {})
+    pfattrs= (scene.get("per_fixture_attrs") or {})
 
     if t == "static":
         allc = scene.get("all", {})
@@ -218,11 +221,10 @@ def build_dmx_frame(fixtures: List[Dict], scene: Dict, root_defaults: Dict[str,i
             _apply_fixture(dmx, f, col, {**gattrs, **pfattrs.get(f["name"], {})}, root_defaults)
         return dmx
 
-    # Für unbekannte Typen: Nullframe
     return dmx
 
 def preview_rgb(scene: Dict) -> Tuple[int,int,int]:
-    """Schätzt eine Vorschau-Farbe für die Button-Kachel."""
+    """Fallback/Legacy (nicht mehr nötig für Webcontroller, der jetzt Canvas nutzt)."""
     t = (scene.get("type") or "static").lower()
     cols = []
     if t == "blackout": return (0,0,0)
@@ -235,12 +237,10 @@ def preview_rgb(scene: Dict) -> Tuple[int,int,int]:
     elif t == "sequence":
         steps = scene.get("steps", [])
         if steps:
-            # heuristische Vorschau: erster Step
             c = (steps[0].get("all") or {})
             if c:
                 cols.append((c.get("r",0), c.get("g",0), c.get("b",0)))
             else:
-                # erster definiertes per-fixture
                 vals = (steps[0].get("values") or {})
                 if vals:
                     first = next(iter(vals.values()))
@@ -277,7 +277,6 @@ def run_sequence(universe: int, fixtures: List[Dict], scene: Dict, root_defaults
     L = max(len(f) for f,_,_ in seq)
     seq = [(ensure_len(f, L), hold, xf) for (f, hold, xf) in seq]
 
-    # Zuerst den ersten Step setzen
     with SEND_LOCK:
         send_dmx(universe, seq[0][0])
 
@@ -292,7 +291,6 @@ def run_sequence(universe: int, fixtures: List[Dict], scene: Dict, root_defaults
         if xf > 0:
             steps = max(2, min(120, xf // 30))
             delay = xf / 1000 / steps
-            # Von aktuellem BASIS-Frame (!) -> Ziel überblenden
             start = get_base_frame(len(nxt_f))
             for i in range(1, steps+1):
                 if ANIM_STOP.is_set(): break
@@ -317,24 +315,20 @@ def send_dmx(universe: int, dmx: List[int]) -> None:
     - Sendet
     - Speichert den gesendeten (gedimmten) Frame
     """
-    # 1) Basis-Frame speichern
     set_base_frame(dmx)
 
-    # 2) Globalen Dimmer anwenden (auf Kopie)
     try:
         _, fixtures, _, _defaults = load_cfg()
         to_send = _apply_global_dimmer(list(dmx), fixtures)
     except Exception:
         to_send = list(dmx)
 
-    # 3) Senden
     data = array.array('B', to_send)
     wrapper = ClientWrapper()
     client = wrapper.Client()
     client.SendDmx(universe, data, lambda status: wrapper.Stop())
     wrapper.Run()
 
-    # 4) Gesendeten (gedimmten) Frame speichern
     set_current_frame(to_send)
 
 # =======================
@@ -358,69 +352,100 @@ def check_token():
     t = request.args.get("token") or request.headers.get("X-Auth-Token")
     return t == AUTH_TOKEN
 
-# --- Öffentliches UI (Buttons) ---
+# =======================
+# Öffentliches UI (Webcontroller)
+# - gleiche Farben/Akzente wie Admin
+# - Logo rechts oben
+# - Szenen-Swatches werden per Canvas mit der "StreamDeck"-Logik gerendert
+# =======================
 HTML = """
 <!doctype html>
 <meta charset="utf-8"/>
 <title>DMX Web Controller</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-body { font-family: system-ui, sans-serif; margin: 20px; background:#111; color:#eee;}
-.grid { display:grid; grid-template-columns: repeat(auto-fill,minmax(160px,1fr)); gap:12px;}
-.btn  { padding:14px; border-radius:12px; background:#222; color:#fff; text-align:center; text-decoration:none; display:block; border:1px solid #333; }
-.btn:hover { background:#2a2a2a; }
-.swatch { width:100%; height:80px; border-radius:10px; margin-bottom:10px; border:1px solid #444;}
-.header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
-.small { opacity:0.7; font-size:0.9em;}
-.topbar { display:flex; gap:10px; align-items:center; margin-bottom:12px;}
-input, button { background:#222; color:#eee; border:1px solid #333; border-radius:10px; padding:8px 10px; }
+:root { color-scheme: light; }
+body { font-family: system-ui, sans-serif; margin: 0; padding: 20px; background:#fff; color:#222; }
 
-/* Floating Dimmer Panel */
-#dim-panel {
-  position: fixed;
-  right: 20px;
-  bottom: 20px;
-  background:#181818;
-  border:1px solid #333;
-  border-radius:14px;
-  padding:12px;
-  box-shadow: 0 8px 24px rgba(0,0,0,.5);
-  z-index: 1000;
-  min-width: 260px;
+.header-bar{
+  display:flex; justify-content:space-between; align-items:center;
+  margin-bottom:18px; padding-bottom:14px;
+  border-bottom:2px solid #a53792;
 }
-#dim-panel h3 { margin: 0 0 8px 0; font-size: 14px; opacity:.9; }
-#dim-panel .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-#dim-panel .pill { padding:4px 8px; border:1px solid #333; border-radius:999px; }
-#dim-slider { width: 100%; accent-color: #888; }
-.dim-btn { padding:6px 10px; border-radius:10px; border:1px solid #333; background:#242424; cursor:pointer;}
-.dim-btn:hover { background:#2c2c2c; }
+.header-left{ display:flex; flex-direction:column; gap:4px; }
+.header-bar h1{ margin:0; color:#a53792; font-size: 22px; }
+.small { opacity:0.75; font-size:0.95em; }
+.logo { height:64px; width:auto; display:block; object-fit:contain; }
+
+.card { border:1px solid #ddd; border-radius:12px; padding:14px; background:#f5f5f5; margin-bottom:14px; }
+.row { display:flex; gap:10px; align-items:center; flex-wrap: wrap; }
+
+input, button { background:#fff; color:#222; border:1px solid #ccc; border-radius:10px; padding:8px 10px; }
+button { cursor:pointer; transition: all .2s; }
+button:hover{ background:#f0f0f0; transform: translateY(-1px); box-shadow: 0 2px 4px rgba(0,0,0,.1); }
+
+.btn-primary { background:#a53792; color:#fff; border-color:#a53792; }
+.btn-primary:hover { background:#8e2d7d; }
+
+.grid { display:grid; grid-template-columns: repeat(auto-fill,minmax(200px,1fr)); gap:14px; }
+
+.scene {
+  border:1px solid #ddd; border-radius:14px; overflow:hidden;
+  background:#fff; text-decoration:none; color:inherit;
+  box-shadow: 0 6px 18px rgba(0,0,0,.06);
+  transition: transform .15s, box-shadow .15s;
+}
+.scene:hover{ transform: translateY(-2px); box-shadow: 0 10px 22px rgba(0,0,0,.10); }
+.scene .swatch{ height:110px; background:#eee; }
+.scene .meta{ padding:12px; display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.scene .label{ font-weight:700; }
+.badge{ padding:3px 10px; border-radius:999px; border:1px solid #a53792; color:#a53792; font-weight:600; font-size:.85em; }
+
+#dim-panel {
+  position: fixed; right: 20px; bottom: 20px;
+  background:#fff; border:1px solid #ddd; border-radius:14px;
+  padding:12px; box-shadow: 0 10px 28px rgba(0,0,0,.12);
+  z-index: 1000; min-width: 280px;
+}
+#dim-panel h3 { margin: 0 0 8px 0; font-size: 14px; opacity:.9; color:#a53792; }
+#dim-panel .pill { padding:4px 10px; border:1px solid #a53792; border-radius:999px; background:#fff; color:#a53792; font-weight:600; }
+#dim-slider { width: 100%; accent-color: #a53792; }
+.dim-btn { padding:6px 10px; border-radius:10px; border:1px solid #ccc; background:#fff; cursor:pointer;}
+.dim-btn:hover { background:#f0f0f0; }
 </style>
 
-<div class="header">
-  <h1>DMX Web Controller</h1>
-  <div class="small">Universe {{universe}} · {{fixtures|length}} Fixtures · {{buttons|length}} Szenen</div>
+<div class="header-bar">
+  <div class="header-left">
+    <h1>DMX Web Controller</h1>
+    <div class="small">Universe {{universe}} · {{fixtures|length}} Fixtures · {{buttons|length}} Szenen</div>
+  </div>
+  <img src="{{logo_url}}" class="logo" alt="Logo">
 </div>
 
-<div class="topbar">
-  <form method="post" action="{{ url_for('blackout') }}{% if token %}?token={{token}}{% endif %}">
-    <button>Blackout</button>
-  </form>
-  <form onsubmit="return false">
-    <label class="small">Fade (ms):</label>
-    <input type="number" id="fade_ms" value="0" min="0" step="50">
-  </form>
+<div class="card">
+  <div class="row" style="justify-content:space-between">
+    <form method="post" action="{{ url_for('blackout') }}{% if token %}?token={{token}}{% endif %}">
+      <button class="btn-primary">Blackout</button>
+    </form>
+    <div class="row">
+      <label class="small">Fade (ms):</label>
+      <input type="number" id="fade_ms" value="0" min="0" step="50" style="width:120px">
+    </div>
+  </div>
 </div>
 
 <div class="grid">
   {% for b in buttons %}
-    <a class="btn" href="#" onclick="trigger({{b.index}});return false;">
-      <div class="swatch" style="background: rgb({{b._rgb[0]}}, {{b._rgb[1]}}, {{b._rgb[2]}})"></div>
-      <div>{{ b.label }}</div>
+    <a class="scene" href="#" onclick="trigger({{b.index}});return false;">
+      <div class="swatch" data-scene='{{ (b.scene or {})|tojson }}'></div>
+      <div class="meta">
+        <div class="label">{{ b.label }}</div>
+        <div class="badge">#{{ b.index }}</div>
+      </div>
     </a>
   {% endfor %}
 </div>
 
-<!-- Floating Dimmer Controls -->
 <div id="dim-panel">
   <h3>Helligkeit</h3>
   <div class="row" style="justify-content:space-between">
@@ -450,7 +475,6 @@ function trigger(idx){
   fetch(url, {method:"POST"});
 }
 
-/* Dimmer API helpers */
 function dimApi(path){
   let url = path;
   {% if token %} url += (path.includes('?') ? '&' : '?') + "token={{token}}"; {% endif %}
@@ -469,17 +493,105 @@ async function dimStep(delta){
   await dimApi('/api/dim/step?delta='+delta);
   updateDim();
 }
-
 async function dimSet(val){
   const pct = parseInt(val||'0');
   await dimApi('/api/dim/set?percent='+pct);
   updateDim();
 }
-
 function dimPreset(p){ dimSet(p); }
 
-/* init */
+// ====== Scene preview: gleiche Logik wie StreamDeck-Generator ======
+function collectColors(scene){
+  const colors = [];
+  const t = (scene?.type || 'blackout').toLowerCase();
+
+  if (t === 'blackout'){
+    colors.push({r:0,g:0,b:0});
+  } else if (t === 'static'){
+    const c = scene.all || {r:0,g:0,b:0};
+    colors.push({r:c.r||0, g:c.g||0, b:c.b||0});
+  } else if (t === 'per-fixture'){
+    const vals = scene.values || {};
+    Object.values(vals).forEach(c => colors.push({r:c.r||0, g:c.g||0, b:c.b||0}));
+  } else if (t === 'sequence'){
+    const steps = scene.steps || [];
+    steps.forEach(st => {
+      if (st.all){
+        colors.push({r:st.all.r||0, g:st.all.g||0, b:st.all.b||0});
+      } else if (st.values){
+        Object.values(st.values).forEach(c => colors.push({r:c.r||0, g:c.g||0, b:c.b||0}));
+      }
+    });
+  }
+
+  if (colors.length === 0) colors.push({r:0,g:0,b:0});
+  return colors;
+}
+
+function renderSceneSwatch(el){
+  const scene = JSON.parse(el.dataset.scene || '{}');
+  const colors = collectColors(scene);
+
+  const W = el.clientWidth || 400;
+  const H = el.clientHeight || 110;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(2, Math.floor(W));
+  canvas.height = Math.max(2, Math.floor(H));
+  const ctx = canvas.getContext('2d');
+
+  if (colors.length === 1){
+    ctx.fillStyle = `rgb(${colors[0].r},${colors[0].g},${colors[0].b})`;
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+  } else if (colors.length === 2){
+    ctx.fillStyle = `rgb(${colors[0].r},${colors[0].g},${colors[0].b})`;
+    ctx.fillRect(0,0,canvas.width/2,canvas.height);
+    ctx.fillStyle = `rgb(${colors[1].r},${colors[1].g},${colors[1].b})`;
+    ctx.fillRect(canvas.width/2,0,canvas.width/2,canvas.height);
+  } else if (colors.length <= 4){
+    const gridSize = Math.ceil(Math.sqrt(colors.length));
+    const cellW = canvas.width / gridSize;
+    const cellH = canvas.height / gridSize;
+    colors.forEach((c,i)=>{
+      const x = (i % gridSize) * cellW;
+      const y = Math.floor(i / gridSize) * cellH;
+      ctx.fillStyle = `rgb(${c.r},${c.g},${c.b})`;
+      ctx.fillRect(x,y,cellW,cellH);
+    });
+  } else {
+    const grad = ctx.createLinearGradient(0,0,0,canvas.height);
+    colors.forEach((c,i)=>{
+      grad.addColorStop(i/(colors.length-1), `rgb(${c.r},${c.g},${c.b})`);
+    });
+    ctx.fillStyle = grad;
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+  }
+
+  // Optional: leichter glossy overlay
+  const g = ctx.createLinearGradient(0,0,0,canvas.height);
+  g.addColorStop(0, 'rgba(255,255,255,0.25)');
+  g.addColorStop(0.6, 'rgba(255,255,255,0.05)');
+  g.addColorStop(1, 'rgba(0,0,0,0.12)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  el.style.backgroundImage = `url(${canvas.toDataURL('image/png')})`;
+  el.style.backgroundSize = 'cover';
+  el.style.backgroundPosition = 'center';
+}
+
+function renderAllSwatches(){
+  document.querySelectorAll('.swatch[data-scene]').forEach(renderSceneSwatch);
+}
+
+window.addEventListener('resize', () => {
+  // bei Resize neu rendern, damit Canvas zur Kachel passt
+  renderAllSwatches();
+});
+
+// init
 updateDim();
+renderAllSwatches();
 </script>
 """
 
@@ -489,9 +601,10 @@ def index():
     universe, fixtures, buttons, _defs = load_cfg()
     btns = []
     for b in sorted(buttons, key=lambda x: x["index"]):
-        x = dict(b); x["_rgb"] = preview_rgb(b.get("scene", {}))
+        x = dict(b)
+        x.setdefault("scene", {})
         btns.append(x)
-    return render_template_string(HTML, universe=universe, fixtures=fixtures, buttons=btns, token=AUTH_TOKEN)
+    return render_template_string(HTML, universe=universe, fixtures=fixtures, buttons=btns, token=AUTH_TOKEN, logo_url=LOGO_URL)
 
 # --- Trigger / Blackout ---
 @app.post("/trigger/<int:index>")
@@ -504,23 +617,34 @@ def trigger(index: int):
     if not b: abort(404, "Button nicht definiert")
     scene = b.get("scene", {"type":"blackout"})
 
-    # Animationen stoppen, bevor etwas Neues startet
     stop_animation()
 
-    # sequence -> Hintergrundthread starten
     if (scene.get("type") or "").lower() == "sequence":
+        if fade_ms > 0:
+            seq_frames = build_sequence_frames(fixtures, scene, defs)
+            if seq_frames:
+                target = seq_frames[0][0]
+                start = get_base_frame(len(target))
+                steps = max(2, min(60, fade_ms // 30))
+                delay = fade_ms / 1000 / steps
+                with SEND_LOCK:
+                    for i in range(1, steps + 1):
+                        t = i / steps
+                        mix = [int(a + (b - a) * t) for a, b in zip(start, target)]
+                        send_dmx(universe, mix)
+                        time.sleep(delay)
+
         ANIM_THREAD = threading.Thread(target=run_sequence, args=(universe, fixtures, scene, defs), daemon=True)
         ANIM_THREAD.start()
         return ("", 204)
 
-    # Statisch / per-fixture -> Crossfade von BASE current -> target
     target = build_dmx_frame(fixtures, scene, defs)
     if fade_ms <= 0:
         with SEND_LOCK:
             send_dmx(universe, target)
         return ("", 204)
 
-    start = get_base_frame(len(target))  # Base, nicht der gedimmte
+    start = get_base_frame(len(target))
     steps = max(2, min(60, fade_ms // 30))
     delay = fade_ms / 1000 / steps
     with SEND_LOCK:
@@ -547,15 +671,15 @@ def api_dim_step():
     delta = int(request.args.get("delta", "10"))
     level = get_global_dimmer()
     set_global_dimmer(level + delta)
-    _resend_current_frame()            # Basis neu mit Dimmer senden
-    return {"level": get_global_dimmer()}
+    _resend_current_frame()
+    return str(get_global_dimmer())
 
 @app.post("/api/dim/set")
 def api_dim_set():
     if not check_token(): abort(401)
     pct = int(request.args.get("percent", request.json.get("percent", 100) if request.is_json else 100))
     set_global_dimmer(pct)
-    _resend_current_frame()            # Basis neu mit Dimmer senden
+    _resend_current_frame()
     return {"level": get_global_dimmer()}
 
 @app.get("/api/dim")
@@ -602,14 +726,13 @@ def api_test_scene():
                 pass
         ANIM_THREAD = threading.Thread(target=runner, daemon=True)
         ANIM_THREAD.start()
-        # Optionaler Auto-Stop nach duration_ms
+
         def stopper():
             time.sleep(max(0, duration_ms/1000))
             stop_animation()
         threading.Thread(target=stopper, daemon=True).start()
         return {"ok": True, "running": "sequence"}
 
-    # statisch/per-fixture einmalig
     target = build_dmx_frame(fixtures, scene, defs)
     if fade_ms <= 0:
         with SEND_LOCK:
@@ -626,37 +749,71 @@ def api_test_scene():
                 time.sleep(delay)
     return {"ok": True}
 
-# --- Admin UI (Editor mit Farbpicker & Test) ---
+# =======================
+# Admin UI (angepasst)
+# - Logo rechts oben (static/logo.png)
+# - Index nicht editierbar
+# - Companion URI kopierbar (voller Link inkl. Token)
+# - Sequence-Step Karten hell (fix)
+# =======================
 ADMIN_HTML = r"""
 <!doctype html>
 <meta charset="utf-8"/>
 <title>DMX Admin</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-  :root { color-scheme: dark; }
-  body { font-family: system-ui, sans-serif; margin: 18px; background:#111; color:#eee; }
+  :root { color-scheme: light; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 20px; background:#fff; color:#222; }
+  .header-bar { display:flex; justify-content:space-between; align-items:center; margin-bottom:24px; padding-bottom:16px; border-bottom:2px solid #a53792; }
+  .header-bar h1 { margin:0; color:#a53792; }
+  .logo { height:64px; width:auto; object-fit:contain; display:block; }
   .row { display:flex; gap:10px; align-items:center; flex-wrap: wrap; }
-  .card { border:1px solid #333; border-radius:12px; padding:12px; background:#1a1a1a; margin-bottom:12px; }
-  input, select, button { background:#202020; color:#eee; border:1px solid #333; border-radius:8px; padding:8px 10px; }
-  button { cursor:pointer; }
-  .btn { padding:8px 12px; border-radius:10px; border:1px solid #333; background:#262626;}
-  .btn:hover { background:#2f2f2f; }
-  .grid { display:grid; grid-template-columns: repeat(auto-fill,minmax(280px,1fr)); gap:12px; }
-  .tiny { font-size:.9em; opacity:.8; }
-  .pill { padding:4px 8px; border:1px solid #333; border-radius:999px; }
-  .colorbox { width:28px; height:20px; border-radius:4px; border:1px solid #444; display:inline-block; vertical-align:middle; }
-  .section-title { font-weight:700; font-size:1.1rem; margin:10px 0; }
-  .danger { color:#ff7b7b; }
+  .card { border:1px solid #ddd; border-radius:12px; padding:16px; background:#f5f5f5; margin-bottom:16px; }
+  .scene-card { border-left: 4px solid #a53792; }
+  input, select, button { background:#fff; color:#222; border:1px solid #ccc; border-radius:8px; padding:8px 10px; }
+  button { cursor:pointer; transition: all 0.2s; }
+  .btn { padding:8px 12px; border-radius:10px; border:1px solid #ccc; background:#fff;}
+  .btn:hover { background:#f0f0f0; transform: translateY(-1px); box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+  .btn-primary { background:#a53792; color:#fff; border-color:#a53792; }
+  .btn-primary:hover { background:#8e2d7d; }
+  .btn-success { background:#a6ce39; color:#fff; border-color:#a6ce39; }
+  .btn-success:hover { background:#8fb52e; }
+  .btn-info { background:#00aeef; color:#fff; border-color:#00aeef; }
+  .btn-info:hover { background:#0092cc; }
+  .btn-warning { background:#ffc000; color:#222; border-color:#ffc000; }
+  .btn-warning:hover { background:#e6ad00; }
+  .scenes-list { display:flex; flex-direction:column; gap:16px; }
+  .tiny { font-size:.9em; opacity:.7; }
+  .pill { padding:4px 12px; border:1px solid #a53792; border-radius:999px; background:#fff; color:#a53792; font-weight:500; }
+  .section-title { font-weight:700; font-size:1.3rem; margin:24px 0 16px 0; color:#a53792; }
+  .danger { background:#dc3545; color:#fff; border-color:#dc3545; }
+  .danger:hover { background:#c82333; }
+
+  .companion-uri { background:#f8f9fa; padding:8px 12px; border:1px solid #ccc; border-radius:6px; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:0.9em; display:inline-flex; align-items:center; gap:8px; margin-top:8px; }
+  .copy-btn { padding:4px 10px; font-size:0.85em; }
+  .fixture-grid { display:grid; grid-template-columns: repeat(auto-fill,minmax(350px,1fr)); gap:12px; }
+
+  /* FIX: Sequence-Step Hintergrund hell */
+  .step-card{ background:#fff !important; border:1px solid #ddd; }
+
+  .index-pill{
+    display:inline-flex; align-items:center; gap:6px;
+    padding:6px 10px; border:1px solid #ccc; border-radius:10px; background:#fff; font-weight:700;
+  }
 </style>
 
-<div class="row" style="justify-content:space-between">
-  <h1>DMX Admin</h1>
+<div class="header-bar">
+  <h1>DMX Controller Admin</h1>
+  <img src="{{logo_url}}" class="logo" alt="Logo">
+</div>
+
+<div class="card">
   <div class="row">
-    <span class="pill">Dimmer: <b id="dim-val">100%</b></span>
-    <button class="btn" onclick="dimStep(-10)">-10%</button>
-    <button class="btn" onclick="dimStep(10)">+10%</button>
+    <span class="pill">Global Dimmer: <b id="dim-val">100%</b></span>
+    <button class="btn btn-warning" onclick="dimStep(-10)">−10%</button>
+    <button class="btn btn-warning" onclick="dimStep(10)">+10%</button>
     <input id="dim-set" type="number" style="width:90px" min="0" max="100" value="100">
-    <button class="btn" onclick="dimSet()">Set</button>
+    <button class="btn btn-primary" onclick="dimSet()">Set Dimmer</button>
   </div>
 </div>
 
@@ -665,19 +822,19 @@ ADMIN_HTML = r"""
     <label>Universe <input id="universe" type="number" min="1" value="1" style="width:100px"></label>
     <label>Default Dimmer <input id="def-dimmer" type="number" min="0" max="255" value="255" style="width:120px"></label>
     <label>Default Strobe <input id="def-strobe" type="number" min="0" max="255" value="0" style="width:120px"></label>
-    <button class="btn" onclick="saveState()">💾 Save</button>
-    <button class="btn" onclick="reloadState()">⤳ Reload</button>
+    <button class="btn btn-success" onclick="saveState()">💾 Save Settings</button>
+    <button class="btn btn-info" onclick="reloadState()">⤳ Reload</button>
     <span class="tiny" id="status"></span>
   </div>
 </div>
 
 <div class="section-title">Fixtures</div>
-<div id="fixtures" class="grid"></div>
-<button class="btn" onclick="addFixture()">+ Add Fixture</button>
+<div id="fixtures" class="fixture-grid"></div>
+<button class="btn btn-primary" onclick="addFixture()">+ Add Fixture</button>
 
-<div class="section-title">Scenes / Buttons</div>
-<div id="buttons" class="grid"></div>
-<button class="btn" onclick="addButton()">+ Add Scene</button>
+<div class="section-title">Scenes</div>
+<div id="buttons" class="scenes-list"></div>
+<button class="btn btn-primary" onclick="addButton()">+ Add Scene</button>
 
 <template id="tpl-fixture">
   <div class="card">
@@ -696,21 +853,33 @@ ADMIN_HTML = r"""
 </template>
 
 <template id="tpl-button">
-  <div class="card">
-    <div class="row">
-      <label>Index <input class="bt-index" type="number" style="width:80px"></label>
-      <label>Label <input class="bt-label" style="width:180px"></label>
-      <label>Type
-        <select class="bt-type">
-          <option>static</option>
-          <option>per-fixture</option>
-          <option>sequence</option>
-          <option>blackout</option>
-        </select>
-      </label>
-      <button class="btn" onclick="triggerScene(this)">▶ Test</button>
-      <button class="btn danger" onclick="delButton(this)">Delete</button>
+  <div class="card scene-card">
+    <div class="row" style="justify-content:space-between; margin-bottom:12px;">
+      <div class="row">
+        <span class="index-pill">Index: <span class="bt-index-text">0</span></span>
+        <label>Label <input class="bt-label" style="width:220px"></label>
+        <label>Type
+          <select class="bt-type">
+            <option>static</option>
+            <option>per-fixture</option>
+            <option>sequence</option>
+            <option>blackout</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <button class="btn btn-info" onclick="triggerScene(this)">▶ Test Scene</button>
+        <button class="btn btn-success" onclick="downloadStreamDeckImage(this)">⬇ Download PNG</button>
+        <button class="btn danger" onclick="delButton(this)">Delete</button>
+      </div>
     </div>
+
+    <div class="companion-uri">
+      <strong>Companion URI:</strong>
+      <code class="uri-text">/trigger/0?fade_ms=2000</code>
+      <button class="btn copy-btn" onclick="copyURI(this)">📋 Copy</button>
+    </div>
+
     <div class="bt-body"></div>
   </div>
 </template>
@@ -728,22 +897,158 @@ function colorRow(title, obj, onChange){
   const r=obj.r|0, g=obj.g|0, b=obj.b|0, w=obj.w|0;
   const wrap=document.createElement('div'); wrap.className='row'; wrap.style.marginTop='8px';
   const hex=rgbToHex(r,g,b);
+
   wrap.innerHTML=`
     <span style="width:120px">${title}</span>
     <input type="color" value="${hex}" class="pick">
-    <span>W</span><input type="range" min="0" max="255" value="${w}" class="wslider" style="width:160px">
-    <span class="colorbox" style="background:${hex}"></span>
-    <span class="tiny">R:${r} G:${g} B:${b} W:${w}</span>`;
+    <span class="tiny">R:${r} G:${g} B:${b}</span>
+    <span style="margin-left:15px">Weiß:</span>
+    <input type="range" min="0" max="255" value="${w}" class="wslider" style="width:120px">
+    <span class="tiny">${w}</span>`;
+
   wrap.querySelector('.pick').addEventListener('input',(e)=>{
     const {r,g,b}=hexToRgb(e.target.value);
-    onChange({r,g,b,w: parseInt(wrap.querySelector('.wslider').value)});
+    const newW = parseInt(wrap.querySelector('.wslider').value);
+    onChange({r,g,b,w:newW});
+    wrap.querySelector('.tiny:last-child').textContent = newW;
   });
   wrap.querySelector('.wslider').addEventListener('input',(e)=>{
-    const w=parseInt(e.target.value);
+    const newW=parseInt(e.target.value);
     const {r,g,b}=hexToRgb(wrap.querySelector('.pick').value);
-    onChange({r,g,b,w});
+    onChange({r,g,b,w:newW});
+    wrap.querySelector('.tiny:last-child').textContent = newW;
   });
   return wrap;
+}
+
+// StreamDeck Image Generator (72x72 px)
+function generateStreamDeckImage(button){
+  const canvas = document.createElement('canvas');
+  canvas.width = 72;
+  canvas.height = 72;
+  const ctx = canvas.getContext('2d');
+
+  const scene = button.scene || {type:'blackout'};
+  const colors = [];
+
+  const t = (scene.type || 'blackout').toLowerCase();
+  if (t === 'blackout'){
+    colors.push({r:0,g:0,b:0});
+  } else if (t === 'static'){
+    const c = scene.all || {r:0,g:0,b:0};
+    colors.push({r:c.r||0, g:c.g||0, b:c.b||0});
+  } else if (t === 'per-fixture'){
+    const vals = scene.values || {};
+    Object.values(vals).forEach(c => colors.push({r:c.r||0, g:c.g||0, b:c.b||0}));
+  } else if (t === 'sequence'){
+    const steps = scene.steps || [];
+    steps.forEach(st => {
+      if (st.all){
+        colors.push({r:st.all.r||0, g:st.all.g||0, b:st.all.b||0});
+      } else if (st.values){
+        Object.values(st.values).forEach(c => colors.push({r:c.r||0, g:c.g||0, b:c.b||0}));
+      }
+    });
+  }
+
+  if (colors.length === 0) colors.push({r:0,g:0,b:0});
+
+  if (colors.length === 1){
+    ctx.fillStyle = `rgb(${colors[0].r},${colors[0].g},${colors[0].b})`;
+    ctx.fillRect(0, 0, 72, 72);
+  } else if (colors.length === 2){
+    ctx.fillStyle = `rgb(${colors[0].r},${colors[0].g},${colors[0].b})`;
+    ctx.fillRect(0, 0, 36, 72);
+    ctx.fillStyle = `rgb(${colors[1].r},${colors[1].g},${colors[1].b})`;
+    ctx.fillRect(36, 0, 36, 72);
+  } else if (colors.length <= 4){
+    const gridSize = Math.ceil(Math.sqrt(colors.length));
+    const cellW = 72 / gridSize;
+    const cellH = 72 / gridSize;
+    colors.forEach((c, i) => {
+      const x = (i % gridSize) * cellW;
+      const y = Math.floor(i / gridSize) * cellH;
+      ctx.fillStyle = `rgb(${c.r},${c.g},${c.b})`;
+      ctx.fillRect(x, y, cellW, cellH);
+    });
+  } else {
+    const grad = ctx.createLinearGradient(0, 0, 0, 72);
+    colors.forEach((c, i) => grad.addColorStop(i / (colors.length - 1), `rgb(${c.r},${c.g},${c.b})`));
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 72, 72);
+  }
+
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 10px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.shadowColor = 'rgba(0,0,0,0.8)';
+  ctx.shadowBlur = 3;
+  ctx.fillText(button.label || 'Scene', 36, 36);
+
+  return canvas;
+}
+
+function downloadStreamDeckImage(btnEl){
+  const idx = parseInt(btnEl.closest('.card').dataset.idx);
+  const button = STATE.buttons[idx];
+  const canvas = generateStreamDeckImage(button);
+
+  canvas.toBlob(blob => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `streamdeck_${button.index}_${(button.label||'scene').replace(/\\s+/g,'_')}.png`;
+    a.click();
+    URL.revokeObjectURL(url);
+    status('StreamDeck Bild heruntergeladen');
+  });
+}
+
+// Companion URI (kopiert voller Link inkl Token)
+function buildCompanionUrl(path){
+  const u = new URL(path, window.location.origin);
+  const token = new URLSearchParams(window.location.search).get('token');
+  if (token) u.searchParams.set('token', token);
+  return u.toString();
+}
+
+function copyURI(btnEl){
+  const codeEl = btnEl.parentElement.querySelector('.uri-text');
+  const relative = codeEl.textContent.trim();
+  const full = buildCompanionUrl(relative);
+
+  const setCopied = () => {
+    const orig = btnEl.textContent;
+    btnEl.textContent = '✓ Copied!';
+    setTimeout(()=>btnEl.textContent = orig, 1500);
+  };
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(full).then(setCopied).catch(() => copyToClipboardFallback(full, btnEl));
+  } else {
+    copyToClipboardFallback(full, btnEl);
+  }
+}
+
+function copyToClipboardFallback(text, btnEl){
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    document.execCommand('copy');
+    if (btnEl) {
+      const orig = btnEl.textContent;
+      btnEl.textContent = '✓ Copied!';
+      setTimeout(()=>btnEl.textContent = orig, 1500);
+    }
+  } catch (err) {
+    alert('Kopieren fehlgeschlagen. URI: ' + text);
+  }
+  document.body.removeChild(textarea);
 }
 
 // ===== Fixtures =====
@@ -771,18 +1076,30 @@ function delFixture(btn){
 }
 
 // ===== Scenes / Buttons =====
+function nextFreeIndex(){
+  const used = new Set((STATE.buttons||[]).map(b => parseInt(b.index)));
+  let i = 0;
+  while (used.has(i)) i++;
+  return i;
+}
+
 function renderButtons(){
   const host=el('buttons'); host.innerHTML='';
   const tpl=el('tpl-button');
+
   STATE.buttons.sort((a,b)=>a.index-b.index).forEach((b,idx)=>{
     const node=tpl.content.firstElementChild.cloneNode(true);
     node.dataset.idx=idx;
-    node.querySelector('.bt-index').value=b.index;
+
+    node.querySelector('.bt-index-text').textContent = String(b.index);
     node.querySelector('.bt-label').value=b.label||'';
+    node.querySelector('.uri-text').textContent = `/trigger/${b.index}?fade_ms=2000`;
+
     const typeSel=node.querySelector('.bt-type');
     typeSel.value=b.scene?.type||'static';
-    node.querySelector('.bt-index').oninput=e=>b.index=parseInt(e.target.value||'0');
+
     node.querySelector('.bt-label').oninput=e=>b.label=e.target.value;
+
     typeSel.onchange=e=>{
       const t=e.target.value;
       if (t==='blackout'){ b.scene={type:'blackout'}; }
@@ -810,11 +1127,10 @@ function renderButtons(){
       });
     }
     else if (s.type==='sequence'){
-      // globale Step-Parameter
       const ctrl=document.createElement('div'); ctrl.className='row';
       ctrl.innerHTML=`<label>hold_ms <input class="hold" type="number" value="${s.hold_ms??0}" style="width:100px"></label>
                       <label>crossfade_ms <input class="xf" type="number" value="${s.crossfade_ms??0}" style="width:120px"></label>
-                      <button class="btn" onclick="addSeqStep(${idx})">+ Add Step</button>`;
+                      <button class="btn btn-primary" onclick="addSeqStep(${idx})">+ Add Step</button>`;
       body.appendChild(ctrl);
       ctrl.querySelector('.hold').oninput=e=>s.hold_ms=parseInt(e.target.value||'0');
       ctrl.querySelector('.xf').oninput  =e=>s.crossfade_ms=parseInt(e.target.value||'0');
@@ -829,8 +1145,9 @@ function renderButtons(){
 }
 
 function renderSeqStep(button, scene, step, si){
-  // Step-Card
-  const box=document.createElement('div'); box.className='card'; box.style.background='#151515';
+  const box=document.createElement('div');
+  box.className='card step-card';
+
   const head=document.createElement('div'); head.className='row';
 
   const typ = step.values ? 'per-fixture' : 'all';
@@ -840,7 +1157,7 @@ function renderSeqStep(button, scene, step, si){
   head.innerHTML = `
     <b>Step ${si+1}</b>
     <span class="tiny">Typ</span>
-    <select class="s-type" style="width:160px">
+    <select class="s-type" style="width:220px">
       <option value="all"${typ==='all'?' selected':''}>all (für alle gleich)</option>
       <option value="per-fixture"${typ==='per-fixture'?' selected':''}>per-fixture (pro Leuchte)</option>
     </select>
@@ -850,35 +1167,31 @@ function renderSeqStep(button, scene, step, si){
   `;
   box.appendChild(head);
 
-  // Body je nach Typ
   const body=document.createElement('div'); body.className='row'; body.style.display='block';
   box.appendChild(body);
 
   function renderBody(){
     body.innerHTML='';
-    if (step.values){ // per-fixture
+    if (step.values){
       step.values = step.values || {};
       STATE.fixtures.forEach(f=>{
         step.values[f.name] = step.values[f.name] || {r:0,g:0,b:0,w:0};
         body.appendChild(colorRow(f.name, step.values[f.name], (c)=>{ step.values[f.name]=c; }));
       });
-    } else { // all
+    } else {
       step.all = step.all || {r:0,g:0,b:0,w:0};
       body.appendChild(colorRow('All', step.all, (c)=>{ step.all=c; }));
     }
   }
   renderBody();
 
-  // Events
   head.querySelector('.s-type').onchange = (e)=>{
     const t=e.target.value;
     if (t==='all'){
-      // all aktivieren, values entfernen
       const first = (step.values && Object.values(step.values)[0]) || {r:0,g:0,b:0,w:0};
       step.all = step.all || {...first};
       delete step.values;
     }else{
-      // per-fixture aktivieren, all entfernen
       step.values = step.values || {};
       if (step.all){
         STATE.fixtures.forEach(f=>{
@@ -893,6 +1206,7 @@ function renderSeqStep(button, scene, step, si){
     }
     renderBody();
   };
+
   head.querySelector('.s-hold').oninput = e=>{
     const v=e.target.value;
     step.hold_ms = (v===''? null : parseInt(v));
@@ -939,8 +1253,9 @@ async function saveState(){
 
 // ===== Dimmer UI =====
 async function dimStep(delta){
-  const r=await fetch('/api/dim/step?delta='+delta,{method:'POST'}); const j=await r.json();
-  el('dim-val').textContent=j.level+'%'; el('dim-set').value=j.level;
+  const r=await fetch('/api/dim/step?delta='+delta,{method:'POST'}); const text=await r.text();
+  const lvl = parseInt(text);
+  el('dim-val').textContent=lvl+'%'; el('dim-set').value=lvl;
 }
 async function dimSet(){
   const pct=parseInt(el('dim-set').value||'100');
@@ -949,20 +1264,21 @@ async function dimSet(){
 }
 
 async function triggerScene(btnEl){
-  const idx=parseInt(btnEl.closest('.card').parentElement.parentElement.dataset.idx ?? btnEl.closest('.card').dataset.idx ?? 0);
+  const idx=parseInt(btnEl.closest('.card').dataset.idx);
   const scene=STATE.buttons[idx].scene;
   await fetch('/api/test_scene', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ scene, fade_ms:0, duration_ms:3000 })});
   status('Test Szene abgespielt');
 }
 
 function addButton(){
-  const nextIdx = STATE.buttons.length ? Math.max(...STATE.buttons.map(b=>b.index))+1 : 0;
+  const nextIdx = nextFreeIndex();
   STATE.buttons.push({index:nextIdx, label:'New Scene', scene:{type:'static', all:{r:255,g:190,b:120,w:0}}});
   renderButtons();
 }
 function delButton(btn){
-  const idx=parseInt(btn.closest('.card').parentElement.parentElement.dataset.idx ?? btn.closest('.card').dataset.idx ?? 0);
-  STATE.buttons.splice(idx,1); renderButtons();
+  const idx=parseInt(btn.closest('.card').dataset.idx);
+  STATE.buttons.splice(idx,1);
+  renderButtons();
 }
 
 reloadState();
@@ -972,14 +1288,13 @@ reloadState();
 @app.get("/admin")
 def admin_page():
     if not check_token(): abort(401)
-    return ADMIN_HTML
+    return render_template_string(ADMIN_HTML, logo_url=LOGO_URL)
 
 # =======================
 # Main
 # =======================
 if __name__ == "__main__":
     if not CFG_PATH.exists():
-        # Initialdatei anlegen, falls fehlt
         initial = {
             "universe": 1,
             "fixtures": [],
@@ -988,4 +1303,5 @@ if __name__ == "__main__":
         }
         save_state(initial)
     print(f"Starte auf {BIND_HOST}:{BIND_PORT} (Token gesetzt: {'ja' if AUTH_TOKEN else 'nein'})")
+    print("Logo-Datei erwartet unter: ./static/logo.png")
     app.run(host=BIND_HOST, port=BIND_PORT)

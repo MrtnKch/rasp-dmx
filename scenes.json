@@ -5,10 +5,10 @@
       "label": "Warm White",
       "scene": {
         "all": {
-          "b": 120,
-          "g": 190,
+          "b": 72,
+          "g": 168,
           "r": 255,
-          "w": 0
+          "w": 202
         },
         "type": "static"
       }
@@ -21,6 +21,19 @@
           "b": 0,
           "g": 0,
           "r": 200,
+          "w": 0
+        },
+        "type": "static"
+      }
+    },
+    {
+      "index": 2,
+      "label": "New Scene",
+      "scene": {
+        "all": {
+          "b": 120,
+          "g": 190,
+          "r": 255,
           "w": 0
         },
         "type": "static"
@@ -72,20 +85,244 @@
       "index": 5,
       "label": "gr\u00fcn / rot",
       "scene": {
+        "crossfade_ms": 150,
+        "hold_ms": 500,
+        "steps": [
+          {
+            "values": {
+              "LEDBars-Left": {
+                "b": 0,
+                "g": 255,
+                "r": 255,
+                "w": 0
+              },
+              "LEDBars-Right": {
+                "b": 0,
+                "g": 255,
+                "r": 255,
+                "w": 0
+              },
+              "Mausi1": {
+                "b": 128,
+                "g": 0,
+                "r": 255,
+                "w": 0
+              },
+              "smartbat1": {
+                "b": 187,
+                "g": 29,
+                "r": 233,
+                "w": 0
+              }
+            }
+          },
+          {
+            "all": {
+              "b": 255,
+              "g": 0,
+              "r": 0,
+              "w": 0
+            }
+          },
+          {
+            "values": {
+              "LEDBars-Left": {
+                "b": 0,
+                "g": 128,
+                "r": 255,
+                "w": 0
+              },
+              "LEDBars-Right": {
+                "b": 0,
+                "g": 128,
+                "r": 255,
+                "w": 0
+              },
+              "Mausi1": {
+                "b": 50,
+                "g": 241,
+                "r": 10,
+                "w": 0
+              },
+              "smartbat1": {
+                "b": 128,
+                "g": 0,
+                "r": 255,
+                "w": 0
+              }
+            }
+          }
+        ],
+        "type": "sequence"
+      }
+    },
+    {
+      "index": 6,
+      "label": "New Scene",
+      "scene": {
         "type": "per-fixture",
         "values": {
-          "LEDBars": {
-            "r": 0,
-            "g": 191,
-            "b": 0,
+          "LEDBars-Left": {
+            "b": 191,
+            "g": 64,
+            "r": 70,
+            "w": 0
+          },
+          "LEDBars-Right": {
+            "b": 191,
+            "g": 64,
+            "r": 70,
+            "w": 0
+          },
+          "Mausi1": {
+            "b": 128,
+            "g": 0,
+            "r": 255,
             "w": 0
           },
           "smartbat1": {
+            "b": 128,
+            "g": 0,
             "r": 255,
-            "g": 128,
-            "b": 192,
             "w": 0
           }
+        }
+      }
+    },
+    {
+      "index": 7,
+      "label": "pink",
+      "scene": {
+        "all": {
+          "b": 152,
+          "g": 49,
+          "r": 255,
+          "w": 86
+        },
+        "type": "static"
+      }
+    },
+    {
+      "index": 8,
+      "label": "T\u00fcrkis",
+      "scene": {
+        "all": {
+          "b": 255,
+          "g": 255,
+          "r": 0,
+          "w": 0
+        },
+        "type": "static"
+      }
+    },
+    {
+      "index": 9,
+      "label": "t\u00fcrkis/pink",
+      "scene": {
+        "type": "per-fixture",
+        "values": {
+          "LEDBars-Left": {
+            "b": 255,
+            "g": 255,
+            "r": 0,
+            "w": 0
+          },
+          "LEDBars-Right": {
+            "b": 255,
+            "g": 255,
+            "r": 0,
+            "w": 0
+          },
+          "Mausi1": {
+            "b": 128,
+            "g": 0,
+            "r": 255,
+            "w": 0
+          },
+          "smartbat1": {
+            "b": 135,
+            "g": 15,
+            "r": 255,
+            "w": 0
+          }
+        }
+      }
+    },
+    {
+      "index": 10,
+      "label": "gr\u00fcn",
+      "scene": {
+        "all": {
+          "b": 24,
+          "g": 218,
+          "r": 68,
+          "w": 0
+        },
+        "type": "static"
+      }
+    },
+    {
+      "index": 11,
+      "label": "blau",
+      "scene": {
+        "all": {
+          "b": 255,
+          "g": 128,
+          "r": 0,
+          "w": 0
+        },
+        "type": "static"
+      }
+    },
+    {
+      "index": 12,
+      "label": "gelb",
+      "scene": {
+        "all": {
+          "b": 0,
+          "g": 255,
+          "r": 255,
+          "w": 0
+        },
+        "type": "static"
+      }
+    },
+    {
+      "index": 13,
+      "label": "orange",
+      "scene": {
+        "all": {
+          "b": 0,
+          "g": 106,
+          "r": 213,
+          "w": 0
+        },
+        "type": "static"
+      }
+    },
+    {
+      "index": 14,
+      "label": "lila",
+      "scene": {
+        "type": "static",
+        "all": {
+          "r": 155,
+          "g": 34,
+          "b": 152,
+          "w": 0
+        }
+      }
+    },
+    {
+      "index": 15,
+      "label": "wei\u00df",
+      "scene": {
+        "type": "static",
+        "all": {
+          "r": 255,
+          "g": 255,
+          "b": 255,
+          "w": 0
         }
       }
     }
@@ -103,7 +340,7 @@
         "W"
       ],
       "mode": "RGBW",
-      "name": "LEDBars",
+      "name": "LEDBars-Right",
       "start_channel": 5
     },
     {
@@ -116,6 +353,18 @@
       "mode": "RGBW",
       "name": "smartbat1",
       "start_channel": 1
+    },
+    {
+      "map": [],
+      "mode": "RGBW",
+      "name": "LEDBars-Left",
+      "start_channel": 10
+    },
+    {
+      "map": [],
+      "mode": "RGBW",
+      "name": "Mausi1",
+      "start_channel": 15
     }
   ],
   "universe": 1
