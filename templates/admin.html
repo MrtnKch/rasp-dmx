@@ -34,7 +34,6 @@
   .copy-btn { padding:4px 10px; font-size:0.85em; }
   .fixture-grid { display:grid; grid-template-columns: repeat(auto-fill,minmax(350px,1fr)); gap:12px; }
 
-  /* FIX: Sequence-Step Hintergrund hell */
   .step-card{ background:#fff !important; border:1px solid #ddd; }
 
   .index-pill{
@@ -84,10 +83,12 @@
       <label>Start Ch <input class="fx-start" type="number" min="1" style="width:90px"></label>
       <label>Mode
         <select class="fx-mode">
-          <option>RGB</option><option selected>RGBW</option>
+          <option>RGB</option>
+          <option selected>RGBW</option>
+          <option>RGBWA</option>
         </select>
       </label>
-      <label>Map (opt) <input class="fx-map" placeholder="z.B. DIM,R,G,B,W" style="width:220px"></label>
+      <label>Map (opt) <input class="fx-map" placeholder="z.B. R,G,B,W,A" style="width:220px"></label>
       <button class="btn danger" onclick="delFixture(this)">Delete</button>
     </div>
   </div>
@@ -134,9 +135,12 @@ function status(msg){ el('status').textContent = msg; setTimeout(()=>el('status'
 function hexToRgb(hex){ const v=hex.replace('#',''); const n=parseInt(v,16); return {r:(n>>16)&255,g:(n>>8)&255,b:n&255}; }
 function rgbToHex(r,g,b){ return '#'+[r,g,b].map(x=>x.toString(16).padStart(2,'0')).join(''); }
 
+// ===== ERWEITERT: colorRow mit Amber (A) Support =====
 function colorRow(title, obj, onChange){
-  const r=obj.r|0, g=obj.g|0, b=obj.b|0, w=obj.w|0;
-  const wrap=document.createElement('div'); wrap.className='row'; wrap.style.marginTop='8px';
+  const r=obj.r|0, g=obj.g|0, b=obj.b|0, w=obj.w|0, a=obj.a|0;
+  const wrap=document.createElement('div'); 
+  wrap.className='row'; 
+  wrap.style.marginTop='8px';
   const hex=rgbToHex(r,g,b);
 
   wrap.innerHTML=`
@@ -145,20 +149,36 @@ function colorRow(title, obj, onChange){
     <span class="tiny">R:${r} G:${g} B:${b}</span>
     <span style="margin-left:15px">Weiß:</span>
     <input type="range" min="0" max="255" value="${w}" class="wslider" style="width:120px">
-    <span class="tiny">${w}</span>`;
+    <span class="tiny w-val">${w}</span>
+    <span style="margin-left:15px">Amber:</span>
+    <input type="range" min="0" max="255" value="${a}" class="aslider" style="width:120px">
+    <span class="tiny a-val">${a}</span>`;
 
   wrap.querySelector('.pick').addEventListener('input',(e)=>{
     const {r,g,b}=hexToRgb(e.target.value);
     const newW = parseInt(wrap.querySelector('.wslider').value);
-    onChange({r,g,b,w:newW});
-    wrap.querySelector('.tiny:last-child').textContent = newW;
+    const newA = parseInt(wrap.querySelector('.aslider').value);
+    onChange({r,g,b,w:newW,a:newA});
+    wrap.querySelector('.w-val').textContent = newW;
+    wrap.querySelector('.a-val').textContent = newA;
   });
+  
   wrap.querySelector('.wslider').addEventListener('input',(e)=>{
     const newW=parseInt(e.target.value);
     const {r,g,b}=hexToRgb(wrap.querySelector('.pick').value);
-    onChange({r,g,b,w:newW});
-    wrap.querySelector('.tiny:last-child').textContent = newW;
+    const newA = parseInt(wrap.querySelector('.aslider').value);
+    onChange({r,g,b,w:newW,a:newA});
+    wrap.querySelector('.w-val').textContent = newW;
   });
+  
+  wrap.querySelector('.aslider').addEventListener('input',(e)=>{
+    const newA=parseInt(e.target.value);
+    const {r,g,b}=hexToRgb(wrap.querySelector('.pick').value);
+    const newW = parseInt(wrap.querySelector('.wslider').value);
+    onChange({r,g,b,w:newW,a:newA});
+    wrap.querySelector('.a-val').textContent = newA;
+  });
+  
   return wrap;
 }
 
@@ -239,7 +259,7 @@ function downloadStreamDeckImage(btnEl){
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `streamdeck_${button.index}_${(button.label||'scene').replace(/\\s+/g,'_')}.png`;
+    a.download = `streamdeck_${button.index}_${(button.label||'scene').replace(/\s+/g,'_')}.png`;
     a.click();
     URL.revokeObjectURL(url);
     status('StreamDeck Bild heruntergeladen');
@@ -344,11 +364,11 @@ function renderButtons(){
     typeSel.onchange=e=>{
       const t=e.target.value;
       if (t==='blackout'){ b.scene={type:'blackout'}; }
-      else if (t==='static'){ b.scene={type:'static', all:{r:255,g:190,b:120,w:0}}; }
+      else if (t==='static'){ b.scene={type:'static', all:{r:255,g:190,b:120,w:0,a:0}}; }
       else if (t==='per-fixture'){ b.scene={type:'per-fixture', values:{}}; }
       else if (t==='sequence'){
         b.scene={ type:'sequence', hold_ms:200, crossfade_ms:400,
-          steps:[ {all:{r:255,g:0,b:0,w:0}}, {all:{r:0,g:0,b:255,w:0}} ] };
+          steps:[ {all:{r:255,g:0,b:0,w:0,a:0}}, {all:{r:0,g:0,b:255,w:0,a:0}} ] };
       }
       renderButtons();
     };
@@ -357,13 +377,13 @@ function renderButtons(){
     const s=b.scene||{type:'static'};
 
     if (s.type==='static'){
-      s.all = s.all || {r:255,g:190,b:120,w:0};
+      s.all = s.all || {r:255,g:190,b:120,w:0,a:0};
       body.appendChild(colorRow('All', s.all, (c)=>{ s.all=c; }));
     }
     else if (s.type==='per-fixture'){
       s.values = s.values || {};
       STATE.fixtures.forEach(f=>{
-        s.values[f.name]=s.values[f.name]||{r:0,g:0,b:0,w:0};
+        s.values[f.name]=s.values[f.name]||{r:0,g:0,b:0,w:0,a:0};
         body.appendChild(colorRow(f.name, s.values[f.name], (c)=>{ s.values[f.name]=c; }));
       });
     }
@@ -416,11 +436,11 @@ function renderSeqStep(button, scene, step, si){
     if (step.values){
       step.values = step.values || {};
       STATE.fixtures.forEach(f=>{
-        step.values[f.name] = step.values[f.name] || {r:0,g:0,b:0,w:0};
+        step.values[f.name] = step.values[f.name] || {r:0,g:0,b:0,w:0,a:0};
         body.appendChild(colorRow(f.name, step.values[f.name], (c)=>{ step.values[f.name]=c; }));
       });
     } else {
-      step.all = step.all || {r:0,g:0,b:0,w:0};
+      step.all = step.all || {r:0,g:0,b:0,w:0,a:0};
       body.appendChild(colorRow('All', step.all, (c)=>{ step.all=c; }));
     }
   }
@@ -429,7 +449,7 @@ function renderSeqStep(button, scene, step, si){
   head.querySelector('.s-type').onchange = (e)=>{
     const t=e.target.value;
     if (t==='all'){
-      const first = (step.values && Object.values(step.values)[0]) || {r:0,g:0,b:0,w:0};
+      const first = (step.values && Object.values(step.values)[0]) || {r:0,g:0,b:0,w:0,a:0};
       step.all = step.all || {...first};
       delete step.values;
     }else{
@@ -440,7 +460,7 @@ function renderSeqStep(button, scene, step, si){
         });
       }else{
         STATE.fixtures.forEach(f=>{
-          step.values[f.name] = step.values[f.name] || {r:0,g:0,b:0,w:0};
+          step.values[f.name] = step.values[f.name] || {r:0,g:0,b:0,w:0,a:0};
         });
       }
       delete step.all;
@@ -463,7 +483,7 @@ function renderSeqStep(button, scene, step, si){
 function addSeqStep(buttonIdx){
   const b=STATE.buttons[buttonIdx];
   b.scene.steps=b.scene.steps||[];
-  b.scene.steps.push({ all:{r:0,g:0,b:0,w:0} });
+  b.scene.steps.push({ all:{r:0,g:0,b:0,w:0,a:0} });
   renderButtons();
 }
 
@@ -513,7 +533,7 @@ async function triggerScene(btnEl){
 
 function addButton(){
   const nextIdx = nextFreeIndex();
-  STATE.buttons.push({index:nextIdx, label:'New Scene', scene:{type:'static', all:{r:255,g:190,b:120,w:0}}});
+  STATE.buttons.push({index:nextIdx, label:'New Scene', scene:{type:'static', all:{r:255,g:190,b:120,w:0,a:0}}});
   renderButtons();
 }
 function delButton(btn){

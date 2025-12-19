@@ -18,10 +18,11 @@
       "label": "Rot",
       "scene": {
         "all": {
-          "b": 0,
-          "g": 0,
           "r": 200,
-          "w": 0
+          "g": 0,
+          "b": 0,
+          "w": 0,
+          "a": 0
         },
         "type": "static"
       }
@@ -55,11 +56,14 @@
         "steps": [
           {
             "all": {
-              "b": 0,
-              "g": 0,
-              "r": 120,
-              "w": 120
-            }
+              "r": 0,
+              "g": 128,
+              "b": 128,
+              "w": 120,
+              "a": 0
+            },
+            "hold_ms": 10000,
+            "crossfade_ms": 2000
           },
           {
             "all": {
@@ -67,15 +71,20 @@
               "g": 0,
               "r": 0,
               "w": 0
-            }
+            },
+            "hold_ms": 10000,
+            "crossfade_ms": 2000
           },
           {
             "all": {
+              "r": 255,
+              "g": 128,
               "b": 0,
-              "g": 191,
-              "r": 219,
-              "w": 18
-            }
+              "w": 18,
+              "a": 0
+            },
+            "hold_ms": 10000,
+            "crossfade_ms": 2000
           }
         ],
         "type": "sequence"
@@ -304,25 +313,124 @@
       "index": 14,
       "label": "lila",
       "scene": {
-        "type": "static",
         "all": {
-          "r": 155,
-          "g": 34,
           "b": 152,
+          "g": 34,
+          "r": 155,
           "w": 0
-        }
+        },
+        "type": "static"
       }
     },
     {
       "index": 15,
       "label": "wei\u00df",
       "scene": {
-        "type": "static",
         "all": {
-          "r": 255,
-          "g": 255,
           "b": 255,
+          "g": 255,
+          "r": 255,
           "w": 0
+        },
+        "type": "static"
+      }
+    },
+    {
+      "index": 16,
+      "label": "gr\u00fcn gelb",
+      "scene": {
+        "type": "per-fixture",
+        "values": {
+          "LEDBars-Left": {
+            "b": 0,
+            "g": 142,
+            "r": 0,
+            "w": 0
+          },
+          "LEDBars-Right": {
+            "b": 0,
+            "g": 142,
+            "r": 0,
+            "w": 0
+          },
+          "Mausi1": {
+            "b": 0,
+            "g": 255,
+            "r": 255,
+            "w": 0
+          },
+          "smartbat1": {
+            "b": 0,
+            "g": 255,
+            "r": 255,
+            "w": 0
+          }
+        }
+      }
+    },
+    {
+      "index": 17,
+      "label": "blau orange",
+      "scene": {
+        "type": "per-fixture",
+        "values": {
+          "LEDBars-Left": {
+            "b": 237,
+            "g": 128,
+            "r": 18,
+            "w": 0
+          },
+          "LEDBars-Right": {
+            "b": 237,
+            "g": 128,
+            "r": 18,
+            "w": 0
+          },
+          "Mausi1": {
+            "b": 0,
+            "g": 128,
+            "r": 255,
+            "w": 0
+          },
+          "smartbat1": {
+            "b": 64,
+            "g": 128,
+            "r": 255,
+            "w": 0
+          }
+        }
+      }
+    },
+    {
+      "index": 18,
+      "label": "rot blau",
+      "scene": {
+        "type": "per-fixture",
+        "values": {
+          "LEDBars-Left": {
+            "b": 239,
+            "g": 136,
+            "r": 44,
+            "w": 0
+          },
+          "LEDBars-Right": {
+            "b": 239,
+            "g": 136,
+            "r": 44,
+            "w": 0
+          },
+          "Mausi1": {
+            "b": 83,
+            "g": 83,
+            "r": 255,
+            "w": 0
+          },
+          "smartbat1": {
+            "b": 83,
+            "g": 83,
+            "r": 255,
+            "w": 0
+          }
         }
       }
     }
@@ -361,8 +469,14 @@
       "start_channel": 10
     },
     {
-      "map": [],
-      "mode": "RGBW",
+      "map": [
+        "R",
+        "G",
+        "B",
+        "W",
+        "A"
+      ],
+      "mode": "RGBWA",
       "name": "Mausi1",
       "start_channel": 15
     }

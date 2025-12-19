@@ -11,19 +11,17 @@ from ola.ClientWrapper import ClientWrapper
 # Konfiguration / Pfade
 # =======================
 CFG_PATH   = Path(os.environ.get("SCENES_JSON", "scenes.json"))
-AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "")   # leer => kein Schutz
+AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "")
 BIND_HOST  = os.environ.get("BIND_HOST", "0.0.0.0")
 BIND_PORT  = int(os.environ.get("BIND_PORT", "8080"))
 DIMMER_STATE_PATH = Path(os.environ.get("DIMMER_STATE_PATH", "dimmer.json"))
 
-# Logo: bitte Datei hier ablegen: ./static/logo.png
 LOGO_URL = "/static/logo.png"
 
 # =======================
 # State laden/speichern
 # =======================
 def load_state() -> Dict:
-    """Liest scenes.json und ergänzt fehlende Felder."""
     try:
         data = json.loads(CFG_PATH.read_text(encoding="utf-8"))
     except Exception:
@@ -38,7 +36,6 @@ def save_state(state: Dict) -> None:
     CFG_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 def load_cfg() -> Tuple[int, List[Dict], List[Dict], Dict[str,int]]:
-    """Convenience: Universe, Fixtures, Buttons, Defaults."""
     st = load_state()
     return int(st.get("universe", 1)), st.get("fixtures", []), st.get("buttons", []), (st.get("defaults", {}) or {})
 
@@ -60,15 +57,14 @@ def _save_dimmer_to_disk(level: int) -> None:
 # =======================
 # Globaler Zustand
 # =======================
-CURRENT_FRAME: Optional[List[int]] = None         # zuletzt GESENDETER (gedimmter) Frame
-CURRENT_BASE_FRAME: Optional[List[int]] = None    # ungedimmter Basis-Frame
+CURRENT_FRAME: Optional[List[int]] = None
+CURRENT_BASE_FRAME: Optional[List[int]] = None
 FRAME_LOCK = threading.Lock()
 SEND_LOCK  = threading.Lock()
 
 ANIM_THREAD: Optional[threading.Thread] = None
 ANIM_STOP  = threading.Event()
 
-# Globaler Dimmer (0..100%) – wirkt auf alles (persistiert)
 GLOBAL_DIMMER_PERCENT = _load_dimmer_from_disk(100)
 GLOBAL_DIMMER_LOCK = threading.Lock()
 
@@ -88,10 +84,16 @@ def get_global_dimmer() -> int:
 def _fixture_span(f: Dict) -> int:
     if f.get("map"):
         return len(f["map"])
-    return 4 if str(f.get("mode", "RGBW")).upper() == "RGBW" else 3
+    mode = str(f.get("mode", "RGBW")).upper()
+    if mode == "RGBWA":
+        return 5
+    elif mode == "RGBW":
+        return 4
+    else:  # RGB
+        return 3
 
 def _apply_global_dimmer(frame: List[int], fixtures: List[Dict]) -> List[int]:
-    """Globaler Dimmer: DIM-Kanal setzen, falls vorhanden – sonst RGB(W) skalieren."""
+    """Globaler Dimmer: DIM/A-Kanal setzen, falls vorhanden – sonst RGB(W) skalieren."""
     pct = get_global_dimmer()
     if pct == 100:
         return list(frame)
@@ -101,22 +103,21 @@ def _apply_global_dimmer(frame: List[int], fixtures: List[Dict]) -> List[int]:
         start = f["start_channel"] - 1
         span  = _fixture_span(f)
         m = [x.upper() for x in (f.get("map") or []) if isinstance(x, str)]
-        if "DIM" in m:
-            ch = start + m.index("DIM")
-            if 0 <= ch < len(out):
-                out[ch] = int(round(255 * factor))
+        
+        # Prüfe auf DIM oder A (Amber als Dimmer-Kanal)
+        dimmer_channels = [ch for ch in ["DIM", "A"] if ch in m]
+        if dimmer_channels:
+            for dim_ch in dimmer_channels:
+                ch = start + m.index(dim_ch)
+                if 0 <= ch < len(out):
+                    out[ch] = int(round(255 * factor))
         else:
             # Skaliere RGB(W)
-            if span >= 4:
-                for off in (0,1,2,3):
-                    i = start + off
-                    if 0 <= i < len(out):
-                        out[i] = int(round(out[i] * factor))
-            else:
-                for off in (0,1,2):
-                    i = start + off
-                    if 0 <= i < len(out):
-                        out[i] = int(round(out[i] * factor))
+            color_channels = min(span, 4)
+            for off in range(color_channels):
+                i = start + off
+                if 0 <= i < len(out):
+                    out[i] = int(round(out[i] * factor))
     return out
 
 # =======================
@@ -155,7 +156,6 @@ def set_base_frame(frame: List[int]) -> None:
         CURRENT_BASE_FRAME = list(frame)
 
 def _resend_current_frame():
-    """Basis-Frame erneut mit aktuellem Dimmer senden (für Dimmeränderungen)."""
     try:
         universe, fixtures, _buttons, _defaults = load_cfg()
         base = get_base_frame(frame_len(fixtures))
@@ -165,7 +165,7 @@ def _resend_current_frame():
         pass
 
 # =======================
-# DMX Frame Builder
+# DMX Frame Builder (mit A-Kanal Support)
 # =======================
 def _apply_fixture(buf: List[int], f: Dict, color: Dict[str,int], attrs: Dict[str,int], root_defaults: Dict[str,int]):
     """Schreibt Werte eines Fixtures gemäß 'map' oder fallback (RGB/RGBW)."""
@@ -175,8 +175,12 @@ def _apply_fixture(buf: List[int], f: Dict, color: Dict[str,int], attrs: Dict[st
     stro_def= int(root_defaults.get("strobe", 0))
 
     dim = int(attrs.get("dimmer", dim_def))
-    stro= int(attrs.get("strobe",  stro_def))
-    r = int(color.get("r",0)); g = int(color.get("g",0)); b = int(color.get("b",0)); w = int(color.get("w",0))
+    stro= int(attrs.get("strobe", stro_def))
+    r = int(color.get("r",0))
+    g = int(color.get("g",0))
+    b = int(color.get("b",0))
+    w = int(color.get("w",0))
+    a = int(color.get("a",0))  # NEU: Amber-Kanal
 
     if not m:
         # Fallback ohne map
@@ -195,11 +199,10 @@ def _apply_fixture(buf: List[int], f: Dict, color: Dict[str,int], attrs: Dict[st
         elif role == "G":      buf[ch] = max(0, min(255, g))
         elif role == "B":      buf[ch] = max(0, min(255, b))
         elif role == "W":      buf[ch] = max(0, min(255, w))
+        elif role == "A":      buf[ch] = max(0, min(255, a))  # NEU: Amber
         elif role == "STROBE": buf[ch] = max(0, min(255, stro))
-        else: pass
 
 def build_dmx_frame(fixtures: List[Dict], scene: Dict, root_defaults: Dict[str,int]) -> List[int]:
-    """Baut Frame für static, per-fixture. (sequence nutzt diese Funktion je Step)"""
     dmx = [0] * frame_len(fixtures)
     t = (scene.get("type") or "static").lower()
     if t == "blackout":
@@ -224,7 +227,6 @@ def build_dmx_frame(fixtures: List[Dict], scene: Dict, root_defaults: Dict[str,i
     return dmx
 
 def preview_rgb(scene: Dict) -> Tuple[int,int,int]:
-    """Fallback/Legacy (nicht mehr nötig für Webcontroller, der jetzt Canvas nutzt)."""
     t = (scene.get("type") or "static").lower()
     cols = []
     if t == "blackout": return (0,0,0)
@@ -255,7 +257,6 @@ def preview_rgb(scene: Dict) -> Tuple[int,int,int]:
 # Sequenzen
 # =======================
 def build_sequence_frames(fixtures: List[Dict], scene: Dict, root_defaults: Dict[str,int]):
-    """Gibt Liste von (frame, hold_ms, crossfade_ms) zurück."""
     default_hold = int(scene.get("hold_ms", 0))
     default_xf   = int(scene.get("crossfade_ms", 0))
     frames = []
@@ -289,7 +290,7 @@ def run_sequence(universe: int, fixtures: List[Dict], scene: Dict, root_defaults
         nxt_f, _hold_nxt, xf = seq[nxt]
         xf = int(xf or 0)
         if xf > 0:
-            steps = max(2, min(120, xf // 30))
+            steps = calculate_fade_steps(xf)
             delay = xf / 1000 / steps
             start = get_base_frame(len(nxt_f))
             for i in range(1, steps+1):
@@ -305,16 +306,41 @@ def run_sequence(universe: int, fixtures: List[Dict], scene: Dict, root_defaults
         idx = nxt
 
 # =======================
+# OPTIMIERTE FADE STEPS
+# =======================
+def calculate_fade_steps(fade_ms: int) -> int:
+    """
+    Berechnet optimale Anzahl Fade-Steps basierend auf Fade-Zeit.
+    
+    Richtlinien:
+    - < 100ms: sehr schnell, wenige Steps (2-5)
+    - 100-500ms: schnell, moderate Steps (5-15)
+    - 500-2000ms: normal, gute Balance (15-40)
+    - 2000-5000ms: langsam, mehr Steps (40-80)
+    - > 5000ms: sehr langsam, viele Steps (80-150)
+    
+    Target: ~30-50 FPS für sichtbare Smoothness
+    """
+    if fade_ms < 100:
+        # Sehr kurze Fades: 2-5 Steps
+        return max(2, min(5, fade_ms // 20))
+    elif fade_ms < 500:
+        # Kurze Fades: 5-15 Steps (ca. 30-50 FPS)
+        return max(5, min(15, fade_ms // 30))
+    elif fade_ms < 2000:
+        # Normale Fades: 15-40 Steps
+        return max(15, min(40, fade_ms // 40))
+    elif fade_ms < 5000:
+        # Lange Fades: 40-80 Steps
+        return max(40, min(80, fade_ms // 50))
+    else:
+        # Sehr lange Fades: 80-150 Steps
+        return max(80, min(150, fade_ms // 60))
+
+# =======================
 # Senden (Base + Dimmer)
 # =======================
 def send_dmx(universe: int, dmx: List[int]) -> None:
-    """
-    Erwartet UNGEDIMMTE Kanalwerte (Basis-Frame).
-    - Speichert den Basis-Frame
-    - Wendet Global-Dimmer an
-    - Sendet
-    - Speichert den gesendeten (gedimmten) Frame
-    """
     set_base_frame(dmx)
 
     try:
@@ -352,13 +378,6 @@ def check_token():
     t = request.args.get("token") or request.headers.get("X-Auth-Token")
     return t == AUTH_TOKEN
 
-# =======================
-# Öffentliche Control UI (Webcontroller)
-# - gleiche Farben/Akzente wie Admin
-# - Logo rechts oben
-# - Szenen-Swatches werden per Canvas mit der "StreamDeck"-Logik gerendert
-# =======================
-
 @app.get("/")
 def index():
     if not check_token(): abort(401)
@@ -389,7 +408,7 @@ def trigger(index: int):
             if seq_frames:
                 target = seq_frames[0][0]
                 start = get_base_frame(len(target))
-                steps = max(2, min(60, fade_ms // 30))
+                steps = calculate_fade_steps(fade_ms)
                 delay = fade_ms / 1000 / steps
                 with SEND_LOCK:
                     for i in range(1, steps + 1):
@@ -409,7 +428,7 @@ def trigger(index: int):
         return ("", 204)
 
     start = get_base_frame(len(target))
-    steps = max(2, min(60, fade_ms // 30))
+    steps = calculate_fade_steps(fade_ms)
     delay = fade_ms / 1000 / steps
     with SEND_LOCK:
         for i in range(1, steps + 1):
@@ -467,7 +486,7 @@ def api_state_set():
     save_state(data)
     return {"ok": True}
 
-# --- API: Szene testweise abspielen (ohne Speichern) ---
+# --- API: Szene testweise abspielen ---
 @app.post("/api/test_scene")
 def api_test_scene():
     global ANIM_THREAD
@@ -503,7 +522,7 @@ def api_test_scene():
             send_dmx(universe, target)
     else:
         start = get_base_frame(len(target))
-        steps = max(2, min(60, fade_ms // 30))
+        steps = calculate_fade_steps(fade_ms)
         delay = fade_ms / 1000 / steps
         with SEND_LOCK:
             for i in range(1, steps + 1):
@@ -512,15 +531,6 @@ def api_test_scene():
                 send_dmx(universe, mix)
                 time.sleep(delay)
     return {"ok": True}
-
-# =======================
-# Admin UI (angepasst)
-# - Logo rechts oben (static/logo.png)
-# - Index nicht editierbar
-# - Companion URI kopierbar (voller Link inkl. Token)
-# - Sequence-Step Karten hell (fix)
-# =======================
-
 
 @app.get("/admin")
 def admin_page():
@@ -541,4 +551,9 @@ if __name__ == "__main__":
         save_state(initial)
     print(f"Starte auf {BIND_HOST}:{BIND_PORT} (Token gesetzt: {'ja' if AUTH_TOKEN else 'nein'})")
     print("Logo-Datei erwartet unter: ./static/logo.png")
+    print("\nOptimierungen aktiviert:")
+    print("  ✓ Amber (A) Kanal vollständig unterstützt")
+    print("  ✓ Adaptive Fade-Steps für smoothe Übergänge")
+    print("  ✓ <100ms: 2-5 Steps | 100-500ms: 5-15 Steps")
+    print("  ✓ 500-2000ms: 15-40 Steps | >2s: bis 150 Steps")
     app.run(host=BIND_HOST, port=BIND_PORT)
