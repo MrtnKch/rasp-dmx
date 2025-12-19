@@ -1,0 +1,234 @@
+<!doctype html>
+<meta charset="utf-8"/>
+<title>DMX Web Controller</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root { color-scheme: light; }
+body { font-family: system-ui, sans-serif; margin: 0; padding: 20px; background:#fff; color:#222; }
+
+.header-bar{
+  display:flex; justify-content:space-between; align-items:center;
+  margin-bottom:18px; padding-bottom:14px;
+  border-bottom:2px solid #a53792;
+}
+.header-left{ display:flex; flex-direction:column; gap:4px; }
+.header-bar h1{ margin:0; color:#a53792; font-size: 22px; }
+.small { opacity:0.75; font-size:0.95em; }
+.logo { height:64px; width:auto; display:block; object-fit:contain; }
+
+.card { border:1px solid #ddd; border-radius:12px; padding:14px; background:#f5f5f5; margin-bottom:14px; }
+.row { display:flex; gap:10px; align-items:center; flex-wrap: wrap; }
+
+input, button { background:#fff; color:#222; border:1px solid #ccc; border-radius:10px; padding:8px 10px; }
+button { cursor:pointer; transition: all .2s; }
+button:hover{ background:#f0f0f0; transform: translateY(-1px); box-shadow: 0 2px 4px rgba(0,0,0,.1); }
+
+.btn-primary { background:#a53792; color:#fff; border-color:#a53792; }
+.btn-primary:hover { background:#8e2d7d; }
+
+.grid { display:grid; grid-template-columns: repeat(auto-fill,minmax(200px,1fr)); gap:14px; }
+
+.scene {
+  border:1px solid #ddd; border-radius:14px; overflow:hidden;
+  background:#fff; text-decoration:none; color:inherit;
+  box-shadow: 0 6px 18px rgba(0,0,0,.06);
+  transition: transform .15s, box-shadow .15s;
+}
+.scene:hover{ transform: translateY(-2px); box-shadow: 0 10px 22px rgba(0,0,0,.10); }
+.scene .swatch{ height:110px; background:#eee; }
+.scene .meta{ padding:12px; display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.scene .label{ font-weight:700; }
+.badge{ padding:3px 10px; border-radius:999px; border:1px solid #a53792; color:#a53792; font-weight:600; font-size:.85em; }
+
+#dim-panel {
+  position: fixed; right: 20px; bottom: 20px;
+  background:#fff; border:1px solid #ddd; border-radius:14px;
+  padding:12px; box-shadow: 0 10px 28px rgba(0,0,0,.12);
+  z-index: 1000; min-width: 280px;
+}
+#dim-panel h3 { margin: 0 0 8px 0; font-size: 14px; opacity:.9; color:#a53792; }
+#dim-panel .pill { padding:4px 10px; border:1px solid #a53792; border-radius:999px; background:#fff; color:#a53792; font-weight:600; }
+#dim-slider { width: 100%; accent-color: #a53792; }
+.dim-btn { padding:6px 10px; border-radius:10px; border:1px solid #ccc; background:#fff; cursor:pointer;}
+.dim-btn:hover { background:#f0f0f0; }
+</style>
+
+<div class="header-bar">
+  <div class="header-left">
+    <h1>DMX Web Controller</h1>
+    <div class="small">Universe {{universe}} · {{fixtures|length}} Fixtures · {{buttons|length}} Szenen</div>
+  </div>
+  <img src="{{logo_url}}" class="logo" alt="Logo">
+</div>
+
+<div class="card">
+  <div class="row" style="justify-content:space-between">
+    <form method="post" action="{{ url_for('blackout') }}{% if token %}?token={{token}}{% endif %}">
+      <button class="btn-primary">Blackout</button>
+    </form>
+    <div class="row">
+      <label class="small">Fade (ms):</label>
+      <input type="number" id="fade_ms" value="0" min="0" step="50" style="width:120px">
+    </div>
+  </div>
+</div>
+
+<div class="grid">
+  {% for b in buttons %}
+    <a class="scene" href="#" onclick="trigger({{b.index}});return false;">
+      <div class="swatch" data-scene='{{ (b.scene or {})|tojson }}'></div>
+      <div class="meta">
+        <div class="label">{{ b.label }}</div>
+        <div class="badge">#{{ b.index }}</div>
+      </div>
+    </a>
+  {% endfor %}
+</div>
+
+<div id="dim-panel">
+  <h3>Helligkeit</h3>
+  <div class="row" style="justify-content:space-between">
+    <span class="pill">Aktuell: <b id="dimval">--%</b></span>
+    <div class="row">
+      <button class="dim-btn" onclick="dimStep(-10)">−10%</button>
+      <button class="dim-btn" onclick="dimStep(-5)">−5%</button>
+      <button class="dim-btn" onclick="dimStep(5)">+5%</button>
+      <button class="dim-btn" onclick="dimStep(10)">+10%</button>
+    </div>
+  </div>
+  <div style="margin:10px 0">
+    <input id="dim-slider" type="range" min="0" max="100" value="100" oninput="dimSet(this.value)">
+  </div>
+  <div class="row">
+    <button class="dim-btn" onclick="dimPreset(0)">0%</button>
+    <button class="dim-btn" onclick="dimPreset(50)">50%</button>
+    <button class="dim-btn" onclick="dimPreset(100)">100%</button>
+  </div>
+</div>
+
+<script>
+function trigger(idx){
+  const fade = document.getElementById('fade_ms').value || "0";
+  let url = "/trigger/"+idx+"?fade_ms="+encodeURIComponent(fade);
+  {% if token %} url += "&token={{token}}"; {% endif %}
+  fetch(url, {method:"POST"});
+}
+
+function dimApi(path){
+  let url = path;
+  {% if token %} url += (path.includes('?') ? '&' : '?') + "token={{token}}"; {% endif %}
+  return fetch(url, {method: path.startsWith('/api/dim') && (path.includes('/set') || path.includes('/step')) ? 'POST' : 'GET'});
+}
+
+async function updateDim(){
+  const r = await dimApi('/api/dim');
+  const j = await r.json();
+  const lvl = j.level ?? 100;
+  document.getElementById('dimval').textContent = lvl + '%';
+  document.getElementById('dim-slider').value = lvl;
+}
+
+async function dimStep(delta){
+  await dimApi('/api/dim/step?delta='+delta);
+  updateDim();
+}
+async function dimSet(val){
+  const pct = parseInt(val||'0');
+  await dimApi('/api/dim/set?percent='+pct);
+  updateDim();
+}
+function dimPreset(p){ dimSet(p); }
+
+// ====== Scene preview: gleiche Logik wie StreamDeck-Generator ======
+function collectColors(scene){
+  const colors = [];
+  const t = (scene?.type || 'blackout').toLowerCase();
+
+  if (t === 'blackout'){
+    colors.push({r:0,g:0,b:0});
+  } else if (t === 'static'){
+    const c = scene.all || {r:0,g:0,b:0};
+    colors.push({r:c.r||0, g:c.g||0, b:c.b||0});
+  } else if (t === 'per-fixture'){
+    const vals = scene.values || {};
+    Object.values(vals).forEach(c => colors.push({r:c.r||0, g:c.g||0, b:c.b||0}));
+  } else if (t === 'sequence'){
+    const steps = scene.steps || [];
+    steps.forEach(st => {
+      if (st.all){
+        colors.push({r:st.all.r||0, g:st.all.g||0, b:st.all.b||0});
+      } else if (st.values){
+        Object.values(st.values).forEach(c => colors.push({r:c.r||0, g:c.g||0, b:c.b||0}));
+      }
+    });
+  }
+
+  if (colors.length === 0) colors.push({r:0,g:0,b:0});
+  return colors;
+}
+
+function renderSceneSwatch(el){
+  const scene = JSON.parse(el.dataset.scene || '{}');
+  const colors = collectColors(scene);
+
+  const W = el.clientWidth || 400;
+  const H = el.clientHeight || 110;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(2, Math.floor(W));
+  canvas.height = Math.max(2, Math.floor(H));
+  const ctx = canvas.getContext('2d');
+
+  if (colors.length === 1){
+    ctx.fillStyle = `rgb(${colors[0].r},${colors[0].g},${colors[0].b})`;
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+  } else if (colors.length === 2){
+    ctx.fillStyle = `rgb(${colors[0].r},${colors[0].g},${colors[0].b})`;
+    ctx.fillRect(0,0,canvas.width/2,canvas.height);
+    ctx.fillStyle = `rgb(${colors[1].r},${colors[1].g},${colors[1].b})`;
+    ctx.fillRect(canvas.width/2,0,canvas.width/2,canvas.height);
+  } else if (colors.length <= 4){
+    const gridSize = Math.ceil(Math.sqrt(colors.length));
+    const cellW = canvas.width / gridSize;
+    const cellH = canvas.height / gridSize;
+    colors.forEach((c,i)=>{
+      const x = (i % gridSize) * cellW;
+      const y = Math.floor(i / gridSize) * cellH;
+      ctx.fillStyle = `rgb(${c.r},${c.g},${c.b})`;
+      ctx.fillRect(x,y,cellW,cellH);
+    });
+  } else {
+    const grad = ctx.createLinearGradient(0,0,0,canvas.height);
+    colors.forEach((c,i)=>{
+      grad.addColorStop(i/(colors.length-1), `rgb(${c.r},${c.g},${c.b})`);
+    });
+    ctx.fillStyle = grad;
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+  }
+
+  // Optional: leichter glossy overlay
+  const g = ctx.createLinearGradient(0,0,0,canvas.height);
+  g.addColorStop(0, 'rgba(255,255,255,0.25)');
+  g.addColorStop(0.6, 'rgba(255,255,255,0.05)');
+  g.addColorStop(1, 'rgba(0,0,0,0.12)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  el.style.backgroundImage = `url(${canvas.toDataURL('image/png')})`;
+  el.style.backgroundSize = 'cover';
+  el.style.backgroundPosition = 'center';
+}
+
+function renderAllSwatches(){
+  document.querySelectorAll('.swatch[data-scene]').forEach(renderSceneSwatch);
+}
+
+window.addEventListener('resize', () => {
+  // bei Resize neu rendern, damit Canvas zur Kachel passt
+  renderAllSwatches();
+});
+
+// init
+updateDim();
+renderAllSwatches();
+</script>
